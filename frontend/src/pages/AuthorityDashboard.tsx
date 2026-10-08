@@ -140,7 +140,7 @@ function AuthorityDashboard() {
 
               <button
   className="review-button"
-  onClick={() => navigate("/review")}
+  onClick={() => navigate("/review/FH-1024")}
 >
   Review
 </button>
@@ -172,7 +172,7 @@ function AuthorityDashboard() {
 
               <button
   className="review-button"
-  onClick={() => navigate("/review")}
+  onClick={() => navigate("/review/FH-1031")}
 >
   Review
 </button>
@@ -204,7 +204,7 @@ function AuthorityDashboard() {
 
               <button
   className="review-button"
-  onClick={() => navigate("/review")}
+  onClick={() => navigate("/review/FH-1044")}
 >
   Review
 </button>

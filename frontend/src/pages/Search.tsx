@@ -8,24 +8,102 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
+import {
+  searchCase,
+  getCase,
+  type CasePublicSearchResponse,
+  type CaseResponse,
+} from "../api/client";
 
 function Search() {
   const navigate = useNavigate();
 
+  // Normalized display type for search results
+  interface SearchResultData {
+    case_id: string;
+    name: string;
+    age: number | null;
+    gender: string | null;
+    last_seen_location: string | null;
+    clothing: string | null;
+    identifying_marks: string | null;
+    status: string;
+  }
+
   const [searchValue, setSearchValue] = useState("");
   const [searched, setSearched] = useState(false);
+  const [caseData, setCaseData] =
+    useState<SearchResultData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleSearch = (event: React.FormEvent<HTMLFormElement>) => {
+  const isCaseId = (input: string) =>
+    /^FH-\d+$/i.test(input.trim());
+
+  const handleSearch = async (
+    event: React.FormEvent<HTMLFormElement>
+  ) => {
     event.preventDefault();
 
-    if (!searchValue.trim()) return;
+    const query = searchValue.trim();
+    if (!query) return;
 
-    setSearched(true);
+    setLoading(true);
+    setError("");
+    setSearched(false);
+    setCaseData(null);
+
+    try {
+      let result: SearchResultData;
+
+      if (isCaseId(query)) {
+        // FH-XXXX Case ID → use GET /api/cases/{case_id}
+        const caseResp: CaseResponse = await getCase(
+          query.toUpperCase()
+        );
+
+        result = {
+          case_id: query.toUpperCase(),
+          name: caseResp.name,
+          age: null,
+          gender: null,
+          last_seen_location: caseResp.last_seen_location,
+          clothing: null,
+          identifying_marks: null,
+          status: caseResp.status,
+        };
+      } else {
+        // Name search → use GET /api/cases/search?q=
+        const searchResp: CasePublicSearchResponse =
+          await searchCase(query);
+
+        result = {
+          case_id: searchResp.case_id,
+          name: searchResp.name,
+          age: searchResp.age,
+          gender: searchResp.gender,
+          last_seen_location: searchResp.last_seen_location,
+          clothing: searchResp.clothing,
+          identifying_marks: searchResp.identifying_marks,
+          status: searchResp.status,
+        };
+      }
+
+      setCaseData(result);
+      setSearched(true);
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Case not found. Please check the Case ID or name."
+      );
+      setCaseData(null);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <div className="search-page">
-
       <div className="search-container">
 
         <button
@@ -57,7 +135,9 @@ function Search() {
 
           <input
             value={searchValue}
-            onChange={(event) => setSearchValue(event.target.value)}
+            onChange={(event) =>
+              setSearchValue(event.target.value)
+            }
             placeholder="Enter Case ID or person's name"
           />
 
@@ -66,30 +146,55 @@ function Search() {
           </button>
         </form>
 
-        {!searched && (
+        {loading && (
+          <div className="search-help">
+            <strong>Searching...</strong>
+
+            <p>
+              FindHome is checking connected records.
+            </p>
+          </div>
+        )}
+
+        {error && (
+          <div className="search-warning">
+            <ShieldCheck size={20} />
+
+            <div>
+              <strong>Search failed</strong>
+
+              <p>{error}</p>
+            </div>
+          </div>
+        )}
+
+        {!searched && !loading && !error && (
           <div className="search-help">
             <strong>Example</strong>
 
             <p>
-              Try searching for <b>FH-1024</b> to view a sample
+              Try searching for <b>FH-5492</b> to view a sample
               reunification case.
             </p>
           </div>
         )}
 
-        {searched && (
+        {searched && caseData && (
           <section className="search-result">
 
             <div className="result-header">
 
               <div>
                 <span>CASE ID</span>
-                <h2>FH-1024</h2>
+
+                <h2>
+                  {caseData.case_id}
+                </h2>
               </div>
 
               <div className="search-status">
                 <span />
-                Searching
+                {caseData.status}
               </div>
 
             </div>
@@ -97,7 +202,14 @@ function Search() {
             <div className="result-person">
 
               <div className="person-avatar large">
-                AK
+                {caseData.name
+                  ? caseData.name
+                      .split(" ")
+                      .map((part) => part[0])
+                      .slice(0, 2)
+                      .join("")
+                      .toUpperCase()
+                  : "?"}
               </div>
 
               <div>
@@ -105,10 +217,16 @@ function Search() {
                   MISSING PERSON
                 </span>
 
-                <h2>Arun Kumar</h2>
+                <h2>
+                  {caseData.name}
+                </h2>
 
                 <p>
-                  42 years • Male
+                  {caseData.age !== null
+                    ? `${caseData.age} years`
+                    : "Age unknown"}
+                  {" • "}
+                  {caseData.gender ?? "Gender unknown"}
                 </p>
               </div>
 
@@ -117,17 +235,17 @@ function Search() {
             <div className="result-stats">
 
               <div>
-                <strong>3</strong>
+                <strong>—</strong>
                 <span>Connected records</span>
               </div>
 
               <div>
-                <strong>1</strong>
+                <strong>—</strong>
                 <span>Potential match</span>
               </div>
 
               <div>
-                <strong>94%</strong>
+                <strong>—</strong>
                 <span>Highest confidence</span>
               </div>
 
@@ -140,19 +258,21 @@ function Search() {
               </div>
 
               <div>
-                <span>Latest update</span>
+                <span>Case status</span>
 
                 <strong>
-                  New shelter record connected
+                  {caseData.status}
                 </strong>
 
                 <p>
-                  A record from Shelter #17 may correspond to
-                  this case.
+                  FindHome is continuously searching connected
+                  records for this case.
                 </p>
 
                 <small>
-                  Today • 11:42 AM
+                  Last seen:{" "}
+                  {caseData.last_seen_location ??
+                    "Location not available"}
                 </small>
               </div>
 
@@ -162,10 +282,10 @@ function Search() {
 
               <div className="section-heading">
                 <div>
-                  <h2>Evidence Found</h2>
+                  <h2>Reported Information</h2>
 
                   <p>
-                    Information connected to this case.
+                    Information submitted for this case.
                   </p>
                 </div>
               </div>
@@ -176,11 +296,11 @@ function Search() {
                   <MapPin size={19} />
 
                   <div>
-                    <strong>Location match</strong>
+                    <strong>Last seen location</strong>
 
                     <p>
-                      Rescue location is 1.2 km from the
-                      last known location.
+                      {caseData.last_seen_location ??
+                        "Not available"}
                     </p>
                   </div>
                 </div>
@@ -189,10 +309,24 @@ function Search() {
                   <CheckCircle size={19} />
 
                   <div>
-                    <strong>Physical match</strong>
+                    <strong>Clothing</strong>
 
                     <p>
-                      Clothing description is consistent.
+                      {caseData.clothing ??
+                        "Not available"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="search-evidence-card">
+                  <ShieldCheck size={19} />
+
+                  <div>
+                    <strong>Identifying marks</strong>
+
+                    <p>
+                      {caseData.identifying_marks ??
+                        "Not available"}
                     </p>
                   </div>
                 </div>
@@ -226,11 +360,26 @@ function Search() {
                 high-confidence match is available.
               </p>
 
-              <button
-                onClick={() => navigate("/")}
-              >
-                Back to Home
-              </button>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  onClick={() => navigate("/")}
+                >
+                  Back to Home
+                </button>
+
+                <button
+                  style={{
+                    background: "#0f766e",
+                    color: "white",
+                    border: "none",
+                  }}
+                  onClick={() =>
+                    navigate(`/review/${caseData.case_id}`)
+                  }
+                >
+                  Review Matches
+                </button>
+              </div>
 
             </div>
 

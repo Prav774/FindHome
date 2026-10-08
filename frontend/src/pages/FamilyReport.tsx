@@ -14,29 +14,19 @@ function FamilyReport() {
 ) => {
   event.preventDefault();
 
-  const form = event.currentTarget;
-  const formData = new FormData(form);
+  const formData = new FormData(event.currentTarget);
 
   const name = String(formData.get("name") || "");
-
   const ageValue = String(formData.get("age") || "");
 
-  const age = ageValue
-    ? Number(ageValue)
-    : null;
+  const age = ageValue ? Number(ageValue) : null;
 
-  const gender = String(
-    formData.get("gender") || ""
-  );
-
+  const gender = String(formData.get("gender") || "");
+  const description = String(formData.get("description") || "");
   const lastSeenLocation = String(
     formData.get("last_seen_location") || ""
   );
-
-  const clothing = String(
-    formData.get("clothing") || ""
-  );
-
+  const clothing = String(formData.get("clothing") || "");
   const identifyingMarks = String(
     formData.get("identifying_marks") || ""
   );
@@ -46,6 +36,7 @@ function FamilyReport() {
       name,
       age,
       gender: gender || null,
+      description: description || null,
       last_seen_location: lastSeenLocation || null,
       clothing: clothing || null,
       identifying_marks: identifyingMarks || null,
@@ -54,8 +45,9 @@ function FamilyReport() {
     setCaseId(result.case_id);
     setSubmitted(true);
 
+    console.log("Case created:", result);
   } catch (error) {
-    console.error(error);
+    console.error("Case creation failed:", error);
 
     alert(
       "Unable to submit the report. Please check that the backend is running."
