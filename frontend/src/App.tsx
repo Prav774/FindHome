@@ -16,7 +16,7 @@ function App() {
         <Route path="/search" element={<Search />} />
         <Route path="/authority" element={<AuthorityDashboard />} />
         <Route path="/responder" element={<ResponderRegister />} />
-        <Route path="/review" element={<MatchReview />} />
+        <Route path="/review/:caseId" element={<MatchReview />} />
       </Routes>
     </BrowserRouter>
   );
