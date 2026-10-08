@@ -1,3 +1,4 @@
+import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -67,8 +68,14 @@ def search_case(
 
 
 @router.get("/{case_id}", response_model=CaseResponse)
-def get_case(case_id: int, db: Session = Depends(get_db)):
-    case = db.query(Case).filter(Case.id == case_id).first()
+def get_case(case_id: str, db: Session = Depends(get_db)):
+    if re.fullmatch(r"FH-\d{4}", case_id):
+        case = db.query(Case).filter(Case.public_case_id == case_id).first()
+    elif case_id.isdigit():
+        case = db.query(Case).filter(Case.id == int(case_id)).first()
+    else:
+        case = None
+
     if case is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
     return case
