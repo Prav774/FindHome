@@ -1,393 +1,133 @@
-import {
-  ArrowLeft,
-  CheckCircle,
-  Clock,
-  MapPin,
-  Search as SearchIcon,
-  ShieldCheck,
-} from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import { useState } from "react";
-import {
-  searchCase,
-  getCase,
-  type CasePublicSearchResponse,
-  type CaseResponse,
-} from "../api/client";
+import { ArrowLeft, Search as SearchIcon } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { getCase, searchCase, type CasePublicSearchResponse, type CaseResponse } from "../api/client";
+
+type SearchResult = {
+  caseId: string;
+  name: string;
+  status: string;
+  age?: number | null;
+  gender?: string | null;
+  location?: string | null;
+  clothing?: string | null;
+  identifyingMarks?: string | null;
+  description?: string | null;
+};
 
 function Search() {
   const navigate = useNavigate();
-
-  // Normalized display type for search results
-  interface SearchResultData {
-    case_id: string;
-    name: string;
-    age: number | null;
-    gender: string | null;
-    last_seen_location: string | null;
-    clothing: string | null;
-    identifying_marks: string | null;
-    status: string;
-  }
-
-  const [searchValue, setSearchValue] = useState("");
-  const [searched, setSearched] = useState(false);
-  const [caseData, setCaseData] =
-    useState<SearchResultData | null>(null);
+  const [query, setQuery] = useState("");
+  const [result, setResult] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const isCaseId = (input: string) =>
-    /^FH-\d+$/i.test(input.trim());
-
-  const handleSearch = async (
-    event: React.FormEvent<HTMLFormElement>
-  ) => {
+  async function handleSearch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    const query = searchValue.trim();
-    if (!query) return;
-
+    const value = query.trim();
+    if (!value || loading) return;
     setLoading(true);
     setError("");
-    setSearched(false);
-    setCaseData(null);
-
+    setResult(null);
     try {
-      let result: SearchResultData;
-
-      if (isCaseId(query)) {
-        // FH-XXXX Case ID → use GET /api/cases/{case_id}
-        const caseResp: CaseResponse = await getCase(
-          query.toUpperCase()
-        );
-
-        result = {
-          case_id: query.toUpperCase(),
-          name: caseResp.name,
-          age: null,
-          gender: null,
-          last_seen_location: caseResp.last_seen_location,
-          clothing: null,
-          identifying_marks: null,
-          status: caseResp.status,
+      let found: SearchResult;
+      if (/^FH-\d+$/i.test(value)) {
+        const item: CaseResponse = await getCase(value.toUpperCase());
+        found = {
+          caseId: value.toUpperCase(),
+          name: item.name,
+          status: item.status,
+          location: item.last_seen_location,
+          description: item.description,
         };
       } else {
-        // Name search → use GET /api/cases/search?q=
-        const searchResp: CasePublicSearchResponse =
-          await searchCase(query);
-
-        result = {
-          case_id: searchResp.case_id,
-          name: searchResp.name,
-          age: searchResp.age,
-          gender: searchResp.gender,
-          last_seen_location: searchResp.last_seen_location,
-          clothing: searchResp.clothing,
-          identifying_marks: searchResp.identifying_marks,
-          status: searchResp.status,
+        const item: CasePublicSearchResponse = await searchCase(value);
+        found = {
+          caseId: item.case_id,
+          name: item.name,
+          status: item.status,
+          age: item.age,
+          gender: item.gender,
+          location: item.last_seen_location,
+          clothing: item.clothing,
+          identifyingMarks: item.identifying_marks,
         };
       }
-
-      setCaseData(result);
-      setSearched(true);
+      setResult(found);
     } catch (err) {
-      console.error(err);
-      setError(
-        "Case not found. Please check the Case ID or name."
-      );
-      setCaseData(null);
+      setError(err instanceof Error ? err.message : "Search failed. Please try again.");
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
-    <div className="search-page">
+    <main className="search-page">
       <div className="search-container">
-
-        <button
-          className="back-button"
-          onClick={() => navigate("/")}
-        >
-          <ArrowLeft size={18} />
-          Back to Home
+        <button className="back-button" onClick={() => navigate("/")}>
+          <ArrowLeft size={18} /> Back to Home
         </button>
+        <header className="search-heading">
+          <div className="search-main-icon"><SearchIcon size={28} /></div>
+          <h1>Find a case</h1>
+          <p>Search by public case ID or the person’s name.</p>
+        </header>
 
-        <div className="search-heading">
-          <div className="search-main-icon">
-            <SearchIcon size={28} />
-          </div>
-
-          <h1>Search for Someone</h1>
-
-          <p>
-            Track a FindHome case or search for a person using the
-            information available to you.
-          </p>
-        </div>
-
-        <form
-          className="case-search-form"
-          onSubmit={handleSearch}
-        >
-          <SearchIcon size={20} />
-
+        <form className="case-search-form" onSubmit={handleSearch}>
+          <SearchIcon size={20} aria-hidden="true" />
+          <label className="sr-only" htmlFor="case-search">Public case ID or name</label>
           <input
-            value={searchValue}
-            onChange={(event) =>
-              setSearchValue(event.target.value)
-            }
-            placeholder="Enter Case ID or person's name"
+            id="case-search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="FH-1234 or a person’s name"
+            autoComplete="off"
+            required
           />
-
-          <button type="submit">
-            Search
-          </button>
+          <button type="submit" disabled={loading}>{loading ? "Searching…" : "Search"}</button>
         </form>
 
-        {loading && (
+        {loading && <p className="search-help" role="status">Searching case records…</p>}
+        {error && <div className="form-alert error" role="alert">Could not load a case. {error}</div>}
+        {!loading && !error && !result && (
           <div className="search-help">
-            <strong>Searching...</strong>
-
-            <p>
-              FindHome is checking connected records.
-            </p>
+            <strong>Track a case</strong>
+            <p>Enter the public ID from the report, or search by name.</p>
           </div>
         )}
 
-        {error && (
-          <div className="search-warning">
-            <ShieldCheck size={20} />
-
-            <div>
-              <strong>Search failed</strong>
-
-              <p>{error}</p>
-            </div>
-          </div>
-        )}
-
-        {!searched && !loading && !error && (
-          <div className="search-help">
-            <strong>Example</strong>
-
-            <p>
-              Try searching for <b>FH-5492</b> to view a sample
-              reunification case.
-            </p>
-          </div>
-        )}
-
-        {searched && caseData && (
-          <section className="search-result">
-
+        {result && (
+          <section className="search-result" aria-labelledby="case-result-name">
             <div className="result-header">
-
-              <div>
-                <span>CASE ID</span>
-
-                <h2>
-                  {caseData.case_id}
-                </h2>
-              </div>
-
-              <div className="search-status">
-                <span />
-                {caseData.status}
-              </div>
-
+              <div><span>PUBLIC CASE ID</span><h2>{result.caseId}</h2></div>
+              <div className="search-status"><span aria-hidden="true" />{result.status}</div>
             </div>
-
             <div className="result-person">
-
-              <div className="person-avatar large">
-                {caseData.name
-                  ? caseData.name
-                      .split(" ")
-                      .map((part) => part[0])
-                      .slice(0, 2)
-                      .join("")
-                      .toUpperCase()
-                  : "?"}
+              <div className="person-avatar large" aria-hidden="true">
+                {result.name.split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase() || "?"}
               </div>
-
               <div>
-                <span className="card-label">
-                  MISSING PERSON
-                </span>
-
-                <h2>
-                  {caseData.name}
-                </h2>
-
-                <p>
-                  {caseData.age !== null
-                    ? `${caseData.age} years`
-                    : "Age unknown"}
-                  {" • "}
-                  {caseData.gender ?? "Gender unknown"}
-                </p>
+                <span className="card-label">CASE PERSON</span>
+                <h2 id="case-result-name">{result.name}</h2>
+                {(result.age != null || result.gender) && <p>{result.age != null ? result.age + " years" : ""}{result.age != null && result.gender ? " · " : ""}{result.gender ?? ""}</p>}
               </div>
-
             </div>
-
-            <div className="result-stats">
-
-              <div>
-                <strong>—</strong>
-                <span>Connected records</span>
-              </div>
-
-              <div>
-                <strong>—</strong>
-                <span>Potential match</span>
-              </div>
-
-              <div>
-                <strong>—</strong>
-                <span>Highest confidence</span>
-              </div>
-
-            </div>
-
-            <div className="latest-update">
-
-              <div className="update-icon">
-                <Clock size={19} />
-              </div>
-
-              <div>
-                <span>Case status</span>
-
-                <strong>
-                  {caseData.status}
-                </strong>
-
-                <p>
-                  FindHome is continuously searching connected
-                  records for this case.
-                </p>
-
-                <small>
-                  Last seen:{" "}
-                  {caseData.last_seen_location ??
-                    "Location not available"}
-                </small>
-              </div>
-
-            </div>
-
-            <div className="evidence-preview">
-
-              <div className="section-heading">
-                <div>
-                  <h2>Reported Information</h2>
-
-                  <p>
-                    Information submitted for this case.
-                  </p>
-                </div>
-              </div>
-
-              <div className="search-evidence-grid">
-
-                <div className="search-evidence-card">
-                  <MapPin size={19} />
-
-                  <div>
-                    <strong>Last seen location</strong>
-
-                    <p>
-                      {caseData.last_seen_location ??
-                        "Not available"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="search-evidence-card">
-                  <CheckCircle size={19} />
-
-                  <div>
-                    <strong>Clothing</strong>
-
-                    <p>
-                      {caseData.clothing ??
-                        "Not available"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="search-evidence-card">
-                  <ShieldCheck size={19} />
-
-                  <div>
-                    <strong>Identifying marks</strong>
-
-                    <p>
-                      {caseData.identifying_marks ??
-                        "Not available"}
-                    </p>
-                  </div>
-                </div>
-
-              </div>
-
-            </div>
-
-            <div className="search-warning">
-
-              <ShieldCheck size={20} />
-
-              <div>
-                <strong>
-                  Verification is still required
-                </strong>
-
-                <p>
-                  A potential match does not mean identity has
-                  been confirmed. Authorized personnel must
-                  verify the evidence.
-                </p>
-              </div>
-
-            </div>
-
-            <div className="search-result-footer">
-
-              <p>
-                FindHome continues searching even when no
-                high-confidence match is available.
-              </p>
-
-              <div style={{ display: "flex", gap: "10px" }}>
-                <button
-                  onClick={() => navigate("/")}
-                >
-                  Back to Home
-                </button>
-
-                <button
-                  style={{
-                    background: "#0f766e",
-                    color: "white",
-                    border: "none",
-                  }}
-                  onClick={() =>
-                    navigate(`/review/${caseData.case_id}`)
-                  }
-                >
-                  Review Matches
-                </button>
-              </div>
-
-            </div>
-
+            <dl className="case-information">
+              {result.location && <div><dt>Last seen location</dt><dd>{result.location}</dd></div>}
+              {result.clothing && <div><dt>Clothing</dt><dd>{result.clothing}</dd></div>}
+              {result.identifyingMarks && <div><dt>Identifying marks</dt><dd>{result.identifyingMarks}</dd></div>}
+              {result.description && <div><dt>Additional information</dt><dd>{result.description}</dd></div>}
+            </dl>
+            <button
+              className="primary-button case-open-button"
+              onClick={() => navigate("/case/" + encodeURIComponent(result.caseId))}
+            >
+              View case status and matches
+            </button>
           </section>
         )}
-
       </div>
-    </div>
+    </main>
   );
 }
 

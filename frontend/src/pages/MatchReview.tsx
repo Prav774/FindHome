@@ -1,772 +1,336 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  AlertTriangle,
-  ArrowLeft,
-  CheckCircle,
-  Clock,
-  Loader2,
-  MapPin,
-  ShieldCheck,
-  XCircle,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, AlertTriangle, CheckCircle, Clock, Loader2, MapPin, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   getCase,
   getCaseMatches,
-  generateMatches,
   getMatch,
+  getPerson,
+  getPersonTimeline,
   verifyMatch,
   rejectMatch,
   requestMatchInfo,
   type CaseResponse,
   type MatchResponse,
   type MatchDetailResponse,
+  type PersonResponse,
+  type TimelineEventResponse,
 } from "../api/client";
 
-function MatchReview() {
+type MatchView = {
+  match: MatchResponse;
+  detail: MatchDetailResponse | null;
+  person: PersonResponse | null;
+  timeline: TimelineEventResponse[] | null;
+  detailError: string;
+  personError: string;
+  timelineError: string;
+};
+
+const MATCH_STATUS_LABELS: Record<string, string> = {
+  POTENTIAL_MATCH: "Potential match · system suggestion",
+  UNDER_VERIFICATION: "Under verification",
+  VERIFIED: "Verified by an authorized responder",
+  REJECTED: "Rejected",
+  NEEDS_MORE_INFO: "More information requested",
+};
+
+function statusLabel(status: string): string {
+  return MATCH_STATUS_LABELS[status] ?? status.replaceAll("_", " ");
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : "The request failed. Please try again.";
+}
+
+function chronological(events: TimelineEventResponse[]): TimelineEventResponse[] {
+  return [...events].sort((a, b) => {
+    const aTime = Date.parse(a.event_time ?? a.created_at);
+    const bTime = Date.parse(b.event_time ?? b.created_at);
+    if (Number.isNaN(aTime)) return Number.isNaN(bTime) ? 0 : 1;
+    if (Number.isNaN(bTime)) return -1;
+    return aTime - bTime;
+  });
+}
+
+function MatchReview({ familyView = false }: { familyView?: boolean }) {
   const navigate = useNavigate();
   const { caseId: caseIdParam } = useParams<{ caseId: string }>();
-
-  // State
   const [caseData, setCaseData] = useState<CaseResponse | null>(null);
-  const [matches, setMatches] = useState<MatchResponse[]>([]);
-  const [selectedMatchIndex, setSelectedMatchIndex] = useState(0);
-  const [matchDetail, setMatchDetail] =
-    useState<MatchDetailResponse | null>(null);
-
+  const [matchViews, setMatchViews] = useState<MatchView[]>([]);
   const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [caseError, setCaseError] = useState("");
+  const [matchesError, setMatchesError] = useState("");
+  const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [actionMessage, setActionMessage] = useState("");
+  const [actionError, setActionError] = useState("");
+  const inFlight = useRef(false);
+  const refreshQueued = useRef(false);
+  const refreshRef = useRef<() => Promise<void>>(async () => {});
+  const hasLoaded = useRef(false);
 
-  // Load case and matches
-  const loadCaseAndMatches = useCallback(async () => {
-    if (!caseIdParam) {
-      setError("No case ID provided.");
-      setLoading(false);
+  const refresh = useCallback(async () => {
+    if (inFlight.current) {
+      refreshQueued.current = true;
       return;
     }
-
-    setLoading(true);
-    setError("");
+    if (!caseIdParam || !/^FH-\d+$/i.test(caseIdParam)) {
+      setCaseError("Enter a public case ID in FH-XXXX format.");
+      setLoading(false);
+      hasLoaded.current = true;
+      return;
+    }
+    inFlight.current = true;
+    if (!hasLoaded.current) setLoading(true);
+    else setRefreshing(true);
+    setCaseError("");
+    setMatchesError("");
 
     try {
-      // Step 1: Resolve string case_id (e.g. "FH-5492") to numeric id
-      const caseResp = await getCase(caseIdParam);
-      setCaseData(caseResp);
-
-      // Step 2: Get existing matches using numeric id
+      const currentCase = await getCase(caseIdParam.toUpperCase());
+      setCaseData(currentCase);
+      let matchList: MatchResponse[];
       try {
-        const matchesResp = await getCaseMatches(caseResp.id);
-        setMatches(matchesResp);
-
-        // Step 3: Load detail for the first match
-        if (matchesResp.length > 0) {
-          setSelectedMatchIndex(0);
-          const detail = await getMatch(matchesResp[0].id);
-          setMatchDetail(detail);
-        }
-      } catch {
-        // No matches yet — that's OK
-        setMatches([]);
-        setMatchDetail(null);
+        matchList = await getCaseMatches(currentCase.id);
+        setMatchesError("");
+      } catch (error) {
+        setMatchesError(errorText(error));
+        hasLoaded.current = true;
+        return;
       }
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to load case";
-      setError(msg);
+
+      if (matchList.length === 0) {
+        setMatchViews([]);
+        hasLoaded.current = true;
+        return;
+      }
+
+      const nextViews = await Promise.all(matchList.map(async (match): Promise<MatchView> => {
+        const [detailResult, personResult, timelineResult] = await Promise.allSettled([
+          getMatch(match.id),
+          getPerson(match.person_id),
+          getPersonTimeline(match.person_id),
+        ]);
+        const detail = detailResult.status === "fulfilled" ? detailResult.value : null;
+        const person = personResult.status === "fulfilled" ? personResult.value : null;
+        const timeline = timelineResult.status === "fulfilled" ? chronological(timelineResult.value) : null;
+        return {
+          match,
+          detail,
+          person,
+          timeline,
+          detailError: detailResult.status === "rejected" ? errorText(detailResult.reason) : "",
+          personError: personResult.status === "rejected" ? errorText(personResult.reason) : "",
+          timelineError: timelineResult.status === "rejected" ? errorText(timelineResult.reason) : "",
+        };
+      }));
+      setMatchViews(nextViews);
+      hasLoaded.current = true;
+    } catch (error) {
+      setCaseError(errorText(error));
+      hasLoaded.current = true;
     } finally {
       setLoading(false);
+      setRefreshing(false);
+      inFlight.current = false;
+      if (refreshQueued.current) {
+        refreshQueued.current = false;
+        window.setTimeout(() => { void refreshRef.current(); }, 0);
+      }
     }
   }, [caseIdParam]);
 
   useEffect(() => {
-    loadCaseAndMatches();
-  }, [loadCaseAndMatches]);
+    refreshRef.current = refresh;
+    hasLoaded.current = false;
+    const initialTimer = window.setTimeout(() => { void refreshRef.current(); }, 0);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, 15000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refresh]);
 
-  // Select a different match
-  const selectMatch = async (index: number) => {
-    if (index < 0 || index >= matches.length) return;
-
-    setSelectedMatchIndex(index);
-    setMatchDetail(null);
-
+  async function runAction(matchId: number, action: (id: number) => Promise<MatchResponse>, success: string) {
+    if (actionLoading !== null) return;
+    setActionLoading(matchId);
+    setActionMessage("");
+    setActionError("");
     try {
-      const detail = await getMatch(matches[index].id);
-      setMatchDetail(detail);
-    } catch (err) {
-      console.error("Failed to load match detail:", err);
-    }
-  };
-
-  // Generate matches
-  const handleGenerateMatches = async () => {
-    if (!caseData) return;
-
-    setGenerating(true);
-    setError("");
-
-    try {
-      const generated = await generateMatches(caseData.id);
-      setMatches(generated);
-
-      if (generated.length > 0) {
-        setSelectedMatchIndex(0);
-        const detail = await getMatch(generated[0].id);
-        setMatchDetail(detail);
-      }
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to generate matches";
-      setError(msg);
+      const result = await action(matchId);
+      setActionMessage(success + " Current backend status: " + result.status + ".");
+      await refresh();
+    } catch (error) {
+      setActionError(errorText(error));
     } finally {
-      setGenerating(false);
+      setActionLoading(null);
     }
-  };
+  }
 
-  // Verification actions
-  const handleVerify = async () => {
-    if (!matchDetail) return;
-    setActionLoading(true);
-    try {
-      await verifyMatch(matchDetail.id);
-      const refreshed = await getMatch(matchDetail.id);
-      setMatchDetail(refreshed);
-      // Update match in list
-      setMatches((prev) =>
-        prev.map((m) =>
-          m.id === refreshed.id ? { ...m, status: refreshed.status } : m
-        )
-      );
-    } catch (err) {
-      console.error("Verify failed:", err);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleReject = async () => {
-    if (!matchDetail) return;
-    setActionLoading(true);
-    try {
-      await rejectMatch(matchDetail.id);
-      const refreshed = await getMatch(matchDetail.id);
-      setMatchDetail(refreshed);
-      setMatches((prev) =>
-        prev.map((m) =>
-          m.id === refreshed.id ? { ...m, status: refreshed.status } : m
-        )
-      );
-    } catch (err) {
-      console.error("Reject failed:", err);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleRequestInfo = async () => {
-    if (!matchDetail) return;
-    setActionLoading(true);
-    try {
-      await requestMatchInfo(matchDetail.id);
-      const refreshed = await getMatch(matchDetail.id);
-      setMatchDetail(refreshed);
-      setMatches((prev) =>
-        prev.map((m) =>
-          m.id === refreshed.id ? { ...m, status: refreshed.status } : m
-        )
-      );
-    } catch (err) {
-      console.error("Request info failed:", err);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  // Helpers
-  const scorePercent = (score: number) => `${Math.round(score * 100)}%`;
-
-  const confidenceLabel = (score: number) => {
-    const pct = score * 100;
-    if (pct >= 80) return "High confidence";
-    if (pct >= 50) return "Medium confidence";
-    return "Low confidence";
-  };
-
-  const currentMatch = matches[selectedMatchIndex] ?? null;
-
-  // ─── Loading State ──────────────────────────────
+  const publicCaseId = caseIdParam && /^FH-\d+$/i.test(caseIdParam) ? caseIdParam.toUpperCase() : "";
+  const backTo = familyView ? "/search" : "/authority";
 
   if (loading) {
     return (
-      <div className="review-page">
+      <main className="review-page">
         <header className="review-header">
-          <button
-            className="back-button"
-            onClick={() => navigate("/authority")}
-          >
-            <ArrowLeft size={18} />
-            Back to Dashboard
-          </button>
-          <div>
-            <div className="review-case-id">
-              CASE {caseIdParam ?? "—"}
-            </div>
-            <h1>Potential Match Review</h1>
-            <p>Loading case data…</p>
-          </div>
+          <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> Back</button>
+          <div><div className="review-case-id">CASE {publicCaseId || "—"}</div><h1>{familyView ? "Case status" : "Match review"}</h1></div>
         </header>
-
-        <main className="review-container">
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "10px",
-              padding: "60px 0",
-              color: "#64748b",
-            }}
-          >
-            <Loader2 size={22} className="spin" />
-            Loading…
-          </div>
-        </main>
-      </div>
+        <div className="state-message" role="status"><Loader2 size={22} className="spin" /> Loading case and match information…</div>
+      </main>
     );
   }
 
-  // ─── Error State ────────────────────────────────
-
-  if (error && !caseData) {
+  if (!caseData) {
     return (
-      <div className="review-page">
+      <main className="review-page">
         <header className="review-header">
-          <button
-            className="back-button"
-            onClick={() => navigate("/authority")}
-          >
-            <ArrowLeft size={18} />
-            Back to Dashboard
-          </button>
-          <div>
-            <div className="review-case-id">
-              CASE {caseIdParam ?? "—"}
-            </div>
-            <h1>Potential Match Review</h1>
-            <p style={{ color: "#dc2626" }}>{error}</p>
-          </div>
+          <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> Back</button>
+          <div><div className="review-case-id">CASE {publicCaseId || "—"}</div><h1>Case status</h1></div>
         </header>
-
-        <main className="review-container">
-          <section className="verification-panel">
-            <div className="verification-icon">
-              <XCircle size={25} />
-            </div>
-            <div className="verification-content">
-              <h2>Unable to Load Case</h2>
-              <p>
-                Could not retrieve case data from the backend.
-                Please check that the case ID is valid and the
-                backend is reachable.
-              </p>
-              <div className="verification-actions">
-                <button
-                  className="request-button"
-                  onClick={loadCaseAndMatches}
-                >
-                  Retry
-                </button>
-              </div>
-            </div>
-          </section>
-        </main>
-      </div>
+        <section className="state-card error-state" role="alert">
+          <XCircle size={24} />
+          <div><h2>Unable to load this case</h2><p>{caseError || "Check the public case ID and backend connection, then try again."}</p></div>
+          <button className="secondary-button" onClick={() => void refresh()}>Retry</button>
+        </section>
+      </main>
     );
   }
-
-  // ─── No Matches State ───────────────────────────
-
-  if (matches.length === 0) {
-    return (
-      <div className="review-page">
-        <header className="review-header">
-          <button
-            className="back-button"
-            onClick={() => navigate("/authority")}
-          >
-            <ArrowLeft size={18} />
-            Back to Dashboard
-          </button>
-          <div>
-            <div className="review-case-id">
-              CASE {caseIdParam ?? "—"}
-            </div>
-            <h1>Potential Match Review</h1>
-            <p>
-              {caseData?.name
-                ? `Case for ${caseData.name}`
-                : "Review the evidence before making a verification decision."}
-            </p>
-          </div>
-        </header>
-
-        <main className="review-container">
-          {error && (
-            <div
-              style={{
-                padding: "14px 18px",
-                marginBottom: "20px",
-                borderRadius: "10px",
-                background: "#fff7f7",
-                border: "1px solid #fecaca",
-                color: "#dc2626",
-                fontSize: "13px",
-              }}
-            >
-              {error}
-            </div>
-          )}
-
-          <section className="verification-panel">
-            <div className="verification-icon">
-              <Clock size={25} />
-            </div>
-            <div className="verification-content">
-              <h2>No Matches Found</h2>
-              <p>
-                No potential matches have been generated for this
-                case yet. You can generate matches using the
-                AI-assisted matching system.
-              </p>
-              <div className="verification-actions">
-                <button
-                  className="verify-button"
-                  onClick={handleGenerateMatches}
-                  disabled={generating}
-                >
-                  {generating ? (
-                    <>
-                      <Loader2 size={18} className="spin" />
-                      Generating…
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle size={18} />
-                      Generate Matches
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </section>
-        </main>
-      </div>
-    );
-  }
-
-  // ─── Main Match Review UI ───────────────────────
 
   return (
-    <div className="review-page">
+    <main className="review-page">
       <header className="review-header">
-        <button
-          className="back-button"
-          onClick={() => navigate("/authority")}
-        >
-          <ArrowLeft size={18} />
-          Back to Dashboard
-        </button>
-
+        <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> {familyView ? "Back to search" : "Back to dashboard"}</button>
         <div>
-          <div className="review-case-id">
-            CASE {caseIdParam ?? "—"}
-          </div>
-
-          <h1>Potential Match Review</h1>
-
-          <p>
-            Review the evidence before making a verification decision.
-          </p>
+          <div className="review-case-id">PUBLIC CASE ID · {publicCaseId}</div>
+          <h1>{familyView ? "Case status" : "Match review"}</h1>
+          <p>Case updates and potential matches from FindHome.</p>
         </div>
+        <button className="refresh-button" onClick={() => void refresh()} disabled={refreshing}>
+          <RefreshCw size={17} className={refreshing ? "spin" : undefined} />
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
       </header>
 
-      <main className="review-container">
+      {caseError && <div className="form-alert error" role="alert">Case refresh failed: {caseError}</div>}
+      {matchesError && <div className="form-alert error" role="alert">Could not refresh matches: {matchesError}</div>}
+      {actionMessage && <div className="form-alert success" role="status">{actionMessage}</div>}
+      {actionError && <div className="form-alert error" role="alert">Action failed: {actionError}</div>}
 
-        {/* Match selector (if multiple matches) */}
+      <section className="case-overview">
+        <div className="case-overview-heading">
+          <div><span className="card-label">PERSON REPORTED</span><h2>{caseData.name}</h2></div>
+          <span className="case-status-value">{caseData.status}</span>
+        </div>
+        <dl className="case-information">
+          {caseData.last_seen_location && <div><dt><MapPin size={16} /> Last seen location</dt><dd>{caseData.last_seen_location}</dd></div>}
+          {caseData.description && <div><dt>Additional information</dt><dd>{caseData.description}</dd></div>}
+          <div><dt>Report created</dt><dd><time dateTime={caseData.created_at}>{new Date(caseData.created_at).toLocaleString()}</time></dd></div>
+          {caseData.updated_at && <div><dt>Last case update</dt><dd><time dateTime={caseData.updated_at}>{new Date(caseData.updated_at).toLocaleString()}</time></dd></div>}
+        </dl>
+      </section>
 
-        {matches.length > 1 && (
-          <div
-            style={{
-              display: "flex",
-              gap: "8px",
-              marginBottom: "20px",
-              flexWrap: "wrap",
-            }}
-          >
-            {matches.map((m, i) => (
-              <button
-                key={m.id}
-                onClick={() => selectMatch(i)}
-                style={{
-                  padding: "8px 14px",
-                  borderRadius: "8px",
-                  border:
-                    i === selectedMatchIndex
-                      ? "2px solid #0f766e"
-                      : "1px solid #cbd5e1",
-                  background:
-                    i === selectedMatchIndex ? "#f0fdfa" : "white",
-                  fontWeight: 700,
-                  fontSize: "13px",
-                  color:
-                    i === selectedMatchIndex
-                      ? "#0f766e"
-                      : "#334155",
-                  cursor: "pointer",
-                }}
-              >
-                Match #{m.id} — {scorePercent(m.score)}
-                {m.status !== "pending" && ` (${m.status})`}
-              </button>
-            ))}
+      <section className="match-list-section" aria-labelledby="potential-matches-heading">
+        <div className="section-heading">
+          <div><h2 id="potential-matches-heading">Potential matches</h2><p>System suggestions require human verification.</p></div>
+          {refreshing && <span className="refreshing-label" role="status">Checking for updates…</span>}
+        </div>
+
+        {matchViews.length === 0 && !matchesError && (
+          <div className="state-card empty-state">
+            <Clock size={25} />
+            <div><h3>No high-confidence match yet</h3><p>The case remains in the system. New match results will appear here as records are updated.</p></div>
           </div>
         )}
 
-        {/* Match Summary */}
+        {matchViews.map(({ match, detail, person, timeline, detailError, personError, timelineError }) => {
+          const supporting = detail?.supporting_evidence ?? [];
+          const conflicting = detail?.conflicting_evidence ?? [];
+          const missing = detail?.missing_evidence ?? [];
+          const nextEvidence = detail?.next_best_evidence ?? {};
+          const effectiveStatus = detail?.status ?? match.status;
+          const finished = effectiveStatus === "VERIFIED" || effectiveStatus === "REJECTED";
+          return (
+            <article className="match-detail-card" key={match.id}>
+              <header className="match-card-header">
+                <div>
+                  <span className="card-label">SYSTEM SUGGESTION</span>
+                  <h3>{person?.name || "Person information unavailable"}</h3>
+                  {person && <p>{[person.age != null ? person.age + " years" : null, person.gender, person.status].filter(Boolean).join(" · ") || "No additional person details returned"}</p>}
+                  {personError ? <p className="inline-note">Person details could not be loaded: {personError}</p> : !person && <p className="inline-note">Loading person details…</p>}
+                </div>
+                <div className="match-score-box">
+                  <span>Match score</span>
+                  <strong>{String(match.score)}</strong>
+                  <small>System score, not a probability</small>
+                </div>
+              </header>
 
-        <section className="match-summary">
+              <div className={"match-status-line status-" + effectiveStatus.toLowerCase().replaceAll("_", "-")}><ShieldCheck size={18} /><strong>{statusLabel(effectiveStatus)}</strong></div>
 
-          <div className="person-card">
-
-            <div className="person-avatar large">
-              {caseData?.name
-                ? caseData.name
-                    .split(" ")
-                    .map((part) => part[0])
-                    .slice(0, 2)
-                    .join("")
-                    .toUpperCase()
-                : "?"}
-            </div>
-
-            <div>
-              <span className="card-label">
-                FAMILY REPORT
-              </span>
-
-              <h2>{caseData?.name ?? "Unknown"}</h2>
-
-              <p>
-                Case #{caseData?.id ?? "—"} • {caseData?.status ?? "—"}
-              </p>
-
-              {caseData?.last_seen_location && (
-                <span className="location-text">
-                  <MapPin size={14} />
-                  Last seen: {caseData.last_seen_location}
-                </span>
+              {detailError ? <div className="inline-alert" role="alert">Match explanation and evidence could not be loaded: {detailError}</div> : !detail ? <p className="inline-note" role="status">Loading match evidence…</p> : (
+                <div className="match-evidence-content">
+                  {detail.explanation && <section className="explanation-block"><h4>Why this was suggested</h4><p>{detail.explanation}</p></section>}
+                  <EvidenceGroup title="Supporting evidence" items={supporting} kind="supporting" />
+                  <EvidenceGroup title="Conflicting evidence" items={conflicting} kind="conflicting" />
+                  <EvidenceGroup title="Information not yet available" items={missing} kind="missing" />
+                  {Object.keys(nextEvidence).length > 0 && <div className="evidence-group"><h4>Suggested next information</h4><ul>{Object.entries(nextEvidence).map(([key, value]) => <li key={key}><strong>{key.replaceAll("_", " ")}: </strong>{value}</li>)}</ul></div>}
+                  {supporting.length + conflicting.length + missing.length === 0 && <p className="inline-note">No supporting, conflicting, or missing evidence details were returned for this match.</p>}
+                </div>
               )}
-            </div>
 
-          </div>
+              <section className="timeline-section" aria-label="Person timeline">
+                <div className="timeline-heading"><Clock size={19} /><h4>Timeline</h4></div>
+                {timelineError && <p className="inline-alert" role="alert">Timeline could not be loaded: {timelineError}</p>}
+                {timeline === null && !timelineError && <p className="inline-note">Loading timeline…</p>}
+                {timeline?.length === 0 && <p className="inline-note">No timeline events are available yet.</p>}
+                {timeline && timeline.length > 0 && <ol className="timeline-list">
+                  {timeline.map((event) => {
+                    const time = event.event_time ?? event.created_at;
+                    return <li key={event.id}>
+                      <time dateTime={time}>{new Date(time).toLocaleString()}</time>
+                      <strong>{event.event_type}</strong>
+                      {event.location && <span><MapPin size={14} /> {event.location}</span>}
+                      {event.description && <p>{event.description}</p>}
+                      {event.source && <small>Source: {event.source}</small>}
+                    </li>;
+                  })}
+                </ol>}
+              </section>
 
-          <div className="match-score">
-
-            <span>AI MATCH</span>
-
-            <strong>
-              {currentMatch
-                ? scorePercent(currentMatch.score)
-                : "—"}
-            </strong>
-
-            <small>
-              {currentMatch
-                ? confidenceLabel(currentMatch.score)
-                : "—"}
-            </small>
-
-          </div>
-
-          <div className="person-card">
-
-            <div className="person-avatar large unknown">
-              ?
-            </div>
-
-            <div>
-              <span className="card-label">
-                MATCHED RECORD
-              </span>
-
-              <h2>
-                Person #{currentMatch?.person_id ?? "—"}
-              </h2>
-
-              <p>
-                Status: {currentMatch?.status ?? "—"}
-              </p>
-            </div>
-
-          </div>
-
-        </section>
-
-        {/* AI Explanation */}
-
-        {currentMatch?.explanation && (
-          <section
-            style={{
-              padding: "18px 22px",
-              marginBottom: "25px",
-              border: "1px solid #e2e8f0",
-              borderRadius: "14px",
-              background: "white",
-            }}
-          >
-            <div className="section-heading" style={{ marginBottom: "10px" }}>
-              <div>
-                <h2>AI Explanation</h2>
-                <p>Summary of why this match was identified.</p>
-              </div>
-            </div>
-            <p
-              style={{
-                color: "#334155",
-                fontSize: "14px",
-                lineHeight: "1.7",
-              }}
-            >
-              {currentMatch.explanation}
-            </p>
-          </section>
-        )}
-
-        {/* Evidence */}
-
-        {matchDetail ? (
-          <section className="evidence-section">
-
-            <div className="section-heading">
-              <div>
-                <h2>Evidence Analysis</h2>
-
-                <p>
-                  The score is based on multiple independent signals.
-                </p>
-              </div>
-
-              <div className="evidence-count">
-                {(matchDetail.supporting_evidence?.length ?? 0) +
-                  (matchDetail.conflicting_evidence?.length ?? 0) +
-                  (matchDetail.missing_evidence?.length ?? 0)}{" "}
-                signals analysed
-              </div>
-            </div>
-
-            {/* Supporting */}
-
-            {matchDetail.supporting_evidence?.length > 0 && (
-              <div className="evidence-group">
-
-                <div className="evidence-group-header supporting">
-                  <CheckCircle size={20} />
-                  <div>
-                    <h3>Supporting Evidence</h3>
-                    <p>Evidence that increases match confidence.</p>
+              <footer className="verification-footer">
+                <div><strong>{effectiveStatus === "VERIFIED" ? "Human verification complete" : effectiveStatus === "REJECTED" ? "This suggestion was rejected" : effectiveStatus === "NEEDS_MORE_INFO" ? "More information was requested" : "Human verification required"}</strong><p>AI suggestions do not confirm identity. An authorized responder makes the verification decision.</p></div>
+                {!familyView && !finished && (
+                  <div className="verification-actions">
+                    <button className="verify-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, verifyMatch, "Verification saved.")}>{actionLoading === match.id ? <Loader2 size={17} className="spin" /> : <CheckCircle size={17} />} Verify</button>
+                    <button className="reject-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, rejectMatch, "Rejection saved.")}><XCircle size={17} /> Reject</button>
+                    <button className="request-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, requestMatchInfo, "Information request saved.")}><AlertTriangle size={17} /> Request more information</button>
                   </div>
-                </div>
-
-                <div className="evidence-grid">
-                  {matchDetail.supporting_evidence.map(
-                    (evidence, i) => (
-                      <div className="evidence-card" key={i}>
-                        <span className="evidence-type">
-                          SUPPORTING #{i + 1}
-                        </span>
-                        <p>{evidence}</p>
-                      </div>
-                    )
-                  )}
-                </div>
-
-              </div>
-            )}
-
-            {/* Conflicting */}
-
-            {matchDetail.conflicting_evidence?.length > 0 && (
-              <div className="evidence-group">
-
-                <div className="evidence-group-header conflicting">
-                  <AlertTriangle size={20} />
-                  <div>
-                    <h3>Conflicting Evidence</h3>
-                    <p>Information that needs human attention.</p>
-                  </div>
-                </div>
-
-                {matchDetail.conflicting_evidence.map(
-                  (evidence, i) => (
-                    <div className="evidence-card conflict-card" key={i}>
-                      <span className="evidence-type">
-                        CONFLICT #{i + 1}
-                      </span>
-                      <p>{evidence}</p>
-                    </div>
-                  )
                 )}
-
-              </div>
-            )}
-
-            {/* Missing */}
-
-            {matchDetail.missing_evidence?.length > 0 && (
-              <div className="evidence-group">
-
-                <div className="evidence-group-header missing">
-                  <Clock size={20} />
-                  <div>
-                    <h3>Missing Evidence</h3>
-                    <p>Information that could increase confidence.</p>
-                  </div>
-                </div>
-
-                {matchDetail.missing_evidence.map((evidence, i) => (
-                  <div className="evidence-card missing-card" key={i}>
-                    <span className="evidence-type">
-                      MISSING #{i + 1}
-                    </span>
-                    <p>{evidence}</p>
-                  </div>
-                ))}
-
-              </div>
-            )}
-
-            {/* Next Best Evidence */}
-
-            {matchDetail.next_best_evidence &&
-              Object.keys(matchDetail.next_best_evidence).length >
-                0 && (
-                <div className="evidence-group">
-                  <div className="evidence-group-header missing">
-                    <Clock size={20} />
-                    <div>
-                      <h3>Next Best Evidence</h3>
-                      <p>
-                        Recommended evidence to gather next.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="evidence-grid">
-                    {Object.entries(
-                      matchDetail.next_best_evidence
-                    ).map(([key, value]) => (
-                      <div
-                        className="evidence-card missing-card"
-                        key={key}
-                      >
-                        <span className="evidence-type">
-                          {key.toUpperCase()}
-                        </span>
-                        <p>{value}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-          </section>
-        ) : (
-          <section
-            className="evidence-section"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "40px",
-              color: "#64748b",
-              gap: "10px",
-            }}
-          >
-            <Loader2 size={20} className="spin" />
-            Loading evidence details…
-          </section>
-        )}
-
-        {/* Verification */}
-
-        <section className="verification-panel">
-
-          <div className="verification-icon">
-            <ShieldCheck size={25} />
-          </div>
-
-          <div className="verification-content">
-
-            <h2>
-              {matchDetail?.status === "verified"
-                ? "Match Verified"
-                : matchDetail?.status === "rejected"
-                  ? "Match Rejected"
-                  : matchDetail?.status === "info_requested"
-                    ? "More Information Requested"
-                    : "Human Verification Required"}
-            </h2>
-
-            <p>
-              {matchDetail?.status === "verified"
-                ? "This match has been confirmed by an authorized authority."
-                : matchDetail?.status === "rejected"
-                  ? "This match has been rejected. It was determined not to be the same person."
-                  : matchDetail?.status === "info_requested"
-                    ? "Additional information has been requested for this match."
-                    : "AI has identified a potential match, but it does not independently confirm identity. An authorized authority must review the evidence before reunification."}
-            </p>
-
-            {matchDetail?.status !== "verified" &&
-              matchDetail?.status !== "rejected" && (
-                <div className="verification-actions">
-
-                  <button
-                    className="verify-button"
-                    onClick={handleVerify}
-                    disabled={actionLoading}
-                  >
-                    <CheckCircle size={18} />
-                    {actionLoading ? "Processing…" : "Confirm Match"}
-                  </button>
-
-                  <button
-                    className="reject-button"
-                    onClick={handleReject}
-                    disabled={actionLoading}
-                  >
-                    Not the Same Person
-                  </button>
-
-                  <button
-                    className="request-button"
-                    onClick={handleRequestInfo}
-                    disabled={actionLoading}
-                  >
-                    Request More Evidence
-                  </button>
-
-                </div>
-              )}
-
-          </div>
-
-        </section>
-
-      </main>
-    </div>
+              </footer>
+            </article>
+          );
+        })}
+      </section>
+    </main>
   );
+}
+
+function EvidenceGroup({ title, items, kind }: { title: string; items: string[]; kind: "supporting" | "conflicting" | "missing" }) {
+  if (items.length === 0) return null;
+  return <section className={"evidence-group " + kind}>
+    <h4>{title}</h4>
+    <ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul>
+  </section>;
 }
 
 export default MatchReview;

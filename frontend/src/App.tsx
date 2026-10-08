@@ -1,5 +1,4 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-
 import Landing from "./pages/Landing";
 import FamilyReport from "./pages/FamilyReport";
 import Search from "./pages/Search";
@@ -16,6 +15,7 @@ function App() {
         <Route path="/search" element={<Search />} />
         <Route path="/authority" element={<AuthorityDashboard />} />
         <Route path="/responder" element={<ResponderRegister />} />
+        <Route path="/case/:caseId" element={<MatchReview familyView />} />
         <Route path="/review/:caseId" element={<MatchReview />} />
       </Routes>
     </BrowserRouter>

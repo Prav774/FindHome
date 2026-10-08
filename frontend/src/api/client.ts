@@ -1,4 +1,28 @@
-const API_BASE_URL = "http://10.56.142.50:8000";
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || "http://10.56.142.50:8000"
+).replace(/\/+$/, "");
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(API_BASE_URL + path, init);
+  if (!response.ok) {
+    const body = await response.text();
+    let message = body;
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (typeof parsed === "object" && parsed !== null && "detail" in parsed) {
+        const detail = (parsed as { detail?: unknown }).detail;
+        message = typeof detail === "string" ? detail : JSON.stringify(detail);
+      }
+    } catch {
+      // Keep plain-text error bodies readable.
+    }
+    throw new Error(message || "Request failed (" + response.status + ")");
+  }
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
+
+const jsonHeaders = { "Content-Type": "application/json" };
 
 // --------------------
 // CASES
@@ -130,169 +154,72 @@ export interface TimelineEventResponse {
 // API FUNCTIONS
 // --------------------
 
-export async function createMissingPersonCase(
+export function createMissingPersonCase(
   data: CaseCreate
 ): Promise<CasePublicCreateResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/cases`, {
+  return request<CasePublicCreateResponse>("/api/cases", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: jsonHeaders,
     body: JSON.stringify(data),
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to create case");
-  }
-
-  return response.json();
 }
 
-export async function searchCase(
-  query: string
-): Promise<CasePublicSearchResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/cases/search?q=${encodeURIComponent(query)}`
+export function searchCase(query: string): Promise<CasePublicSearchResponse> {
+  return request<CasePublicSearchResponse>(
+    "/api/cases/search?q=" + encodeURIComponent(query)
   );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Case not found");
-  }
-
-  return response.json();
 }
 
-export async function getCase(
-  caseId: string
-): Promise<CaseResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/cases/${encodeURIComponent(caseId)}`
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to get case");
-  }
-
-  return response.json();
+export function getCase(caseId: string): Promise<CaseResponse> {
+  return request<CaseResponse>("/api/cases/" + encodeURIComponent(caseId));
 }
 
-// --------------------
-// MATCHING
-// --------------------
-
-export async function generateMatches(
-  caseId: number
-): Promise<MatchResponse[]> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/cases/${caseId}/generate-matches`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to generate matches");
-  }
-
-  return response.json();
+export function getCases(): Promise<CaseResponse[]> {
+  return request<CaseResponse[]>("/api/cases");
 }
 
-export async function getCaseMatches(
-  caseId: number
-): Promise<MatchResponse[]> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/cases/${caseId}/matches`
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to get case matches");
-  }
-
-  return response.json();
+export function getPerson(personId: number): Promise<PersonResponse> {
+  return request<PersonResponse>("/api/persons/" + personId);
 }
 
-export async function getMatch(
-  matchId: number
-): Promise<MatchDetailResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/matches/${matchId}`
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to get match details");
-  }
-
-  return response.json();
+export function getPersonTimeline(
+  personId: number
+): Promise<TimelineEventResponse[]> {
+  return request<TimelineEventResponse[]>("/api/persons/" + personId + "/timeline");
 }
 
-export async function verifyMatch(
-  matchId: number
-): Promise<MatchResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/matches/${matchId}/verify`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to verify match");
-  }
-
-  return response.json();
+export function generateMatches(caseId: number): Promise<MatchResponse[]> {
+  return request<MatchResponse[]>("/api/cases/" + caseId + "/generate-matches", {
+    method: "POST",
+    headers: jsonHeaders,
+  });
 }
 
-export async function rejectMatch(
-  matchId: number
-): Promise<MatchResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/matches/${matchId}/reject`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to reject match");
-  }
-
-  return response.json();
+export function getCaseMatches(caseId: number): Promise<MatchResponse[]> {
+  return request<MatchResponse[]>("/api/cases/" + caseId + "/matches");
 }
 
-export async function requestMatchInfo(
-  matchId: number
-): Promise<MatchResponse> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/matches/${matchId}/request-info`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
+export function getMatch(matchId: number): Promise<MatchDetailResponse> {
+  return request<MatchDetailResponse>("/api/matches/" + matchId);
+}
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(errorText || "Failed to request match information");
-  }
+export function verifyMatch(matchId: number): Promise<MatchResponse> {
+  return request<MatchResponse>("/api/matches/" + matchId + "/verify", {
+    method: "POST",
+    headers: jsonHeaders,
+  });
+}
 
-  return response.json();
+export function rejectMatch(matchId: number): Promise<MatchResponse> {
+  return request<MatchResponse>("/api/matches/" + matchId + "/reject", {
+    method: "POST",
+    headers: jsonHeaders,
+  });
+}
+
+export function requestMatchInfo(matchId: number): Promise<MatchResponse> {
+  return request<MatchResponse>("/api/matches/" + matchId + "/request-info", {
+    method: "POST",
+    headers: jsonHeaders,
+  });
 }

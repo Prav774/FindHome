@@ -5,285 +5,135 @@ import { createMissingPersonCase } from "../api/client";
 
 function FamilyReport() {
   const navigate = useNavigate();
-
-  const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
   const [caseId, setCaseId] = useState("");
+  const [caseStatus, setCaseStatus] = useState("");
 
-  const handleSubmit = async (
-  event: React.FormEvent<HTMLFormElement>
-) => {
-  event.preventDefault();
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
 
-  const formData = new FormData(event.currentTarget);
-
-  const name = String(formData.get("name") || "");
-  const ageValue = String(formData.get("age") || "");
-
-  const age = ageValue ? Number(ageValue) : null;
-
-  const gender = String(formData.get("gender") || "");
-  const description = String(formData.get("description") || "");
-  const lastSeenLocation = String(
-    formData.get("last_seen_location") || ""
-  );
-  const clothing = String(formData.get("clothing") || "");
-  const identifyingMarks = String(
-    formData.get("identifying_marks") || ""
-  );
-
-  try {
-    const result = await createMissingPersonCase({
-      name,
-      age,
-      gender: gender || null,
-      description: description || null,
-      last_seen_location: lastSeenLocation || null,
-      clothing: clothing || null,
-      identifying_marks: identifyingMarks || null,
-    });
-
-    setCaseId(result.case_id);
-    setSubmitted(true);
-
-    console.log("Case created:", result);
-  } catch (error) {
-    console.error("Case creation failed:", error);
-
-    alert(
-      "Unable to submit the report. Please check that the backend is running."
-    );
+    const form = new FormData(event.currentTarget);
+    const ageValue = String(form.get("age") ?? "").trim();
+    try {
+      const result = await createMissingPersonCase({
+        name: String(form.get("name") ?? "").trim(),
+        age: ageValue ? Number(ageValue) : null,
+        gender: String(form.get("gender") ?? "") || null,
+        last_seen_location: String(form.get("last_seen_location") ?? "").trim() || null,
+        clothing: String(form.get("clothing") ?? "").trim() || null,
+        identifying_marks: String(form.get("identifying_marks") ?? "").trim() || null,
+        description: String(form.get("description") ?? "").trim() || null,
+      });
+      setCaseId(result.case_id);
+      setCaseStatus(result.status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to submit the report. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
-};
 
-  if (submitted) {
+  if (caseId) {
     return (
-      <div className="success-page">
-        <div className="success-card">
-          <div className="success-icon">
-            <CheckCircle size={42} />
-          </div>
-
-          <h1>Report Submitted</h1>
-
-          <p>
-            Your missing person report has been registered with FindHome.
-            Our system will search connected rescue, shelter and hospital
-            records for potential matches.
-          </p>
-
+      <main className="success-page">
+        <section className="success-card" aria-labelledby="report-success-title">
+          <div className="success-icon"><CheckCircle size={42} /></div>
+          <h1 id="report-success-title">Report received</h1>
+          <p>Your case has been created. Save this public case ID to check for updates.</p>
           <div className="case-id-box">
-            <span>YOUR CASE ID</span>
+            <span>PUBLIC CASE ID</span>
             <strong>{caseId}</strong>
-            <small>Save this ID to track the case.</small>
+            {caseStatus && <small>Current status: {caseStatus}</small>}
           </div>
-
-          <div className="case-status">
+          <div className="case-status" role="status">
             <span className="status-dot" />
             <div>
-              <strong>Searching for matches</strong>
-              <p>
-                FindHome is continuously checking connected records.
-              </p>
+              <strong>Matches update automatically</strong>
+              <p>An empty match list does not mean the person has not been found. Check again for new updates.</p>
             </div>
           </div>
-
           <button
             className="primary-button success-home-button"
-            onClick={() => navigate("/")}
+            onClick={() => navigate("/case/" + encodeURIComponent(caseId))}
           >
-            Return to Home
+            View case status
           </button>
-        </div>
-      </div>
+          <button className="text-button" onClick={() => navigate("/")}>Return to home</button>
+        </section>
+      </main>
     );
   }
 
   return (
-    <div className="report-page">
+    <main className="report-page">
       <div className="report-container">
-
-        <button
-          className="back-button"
-          onClick={() => navigate("/")}
-        >
-          <ArrowLeft size={18} />
-          Back to Home
+        <button className="back-button" onClick={() => navigate("/")}>
+          <ArrowLeft size={18} /> Back to Home
         </button>
-
-        <div className="report-header">
-          <div className="report-icon">
-            <UserRound size={26} />
-          </div>
-
+        <header className="report-header">
+          <div className="report-icon"><UserRound size={26} /></div>
           <div>
-            <h1>Report a Missing Person</h1>
-            <p>
-              Provide as much information as possible. FindHome will use
-              these details to search connected disaster records.
-            </p>
+            <h1>Report a missing person</h1>
+            <p>Enter what you know. You can leave details blank if you are unsure.</p>
           </div>
-        </div>
+        </header>
 
-        <form
-          className="report-form"
-          onSubmit={handleSubmit}
-        >
+        {error && <div className="form-alert error" role="alert">{error}</div>}
 
-          <section className="form-section">
-            <h2>Basic Information</h2>
-
-            <p className="section-description">
-              Information that can help identify the missing person.
-            </p>
-
+        <form className="report-form" onSubmit={handleSubmit}>
+          <section className="form-section" aria-labelledby="person-information-heading">
+            <h2 id="person-information-heading">Person information</h2>
+            <p className="section-description">Share details that may help identify the person.</p>
             <div className="form-grid">
-
               <div className="form-group">
-                <label>Full Name *</label>
-                <input
-                  type="text"
-                  name="name"
-                  placeholder="Enter full name"
-                  required
-                />
+                <label htmlFor="report-name">Full name <span aria-hidden="true">*</span></label>
+                <input id="report-name" name="name" autoComplete="name" required maxLength={200} />
               </div>
-
               <div className="form-group">
-                <label>Age</label>
-                <input
-                  type="number"
-                  name="age"
-                  placeholder="Age"
-                />
+                <label htmlFor="report-age">Age</label>
+                <input id="report-age" name="age" type="number" min="0" max="130" inputMode="numeric" />
               </div>
-
               <div className="form-group">
-                <label>Gender</label>
-                <select name="gender">
-                  <option value="">Select gender</option>
-                  <option>Male</option>
-                  <option>Female</option>
-                  <option>Other</option>
-                  <option>Unknown</option>
+                <label htmlFor="report-gender">Gender</label>
+                <select id="report-gender" name="gender" defaultValue="">
+                  <option value="">Select if known</option>
+                  <option>Male</option><option>Female</option><option>Other</option><option>Unknown</option>
                 </select>
               </div>
-
               <div className="form-group">
-                <label>Phone Number</label>
-                <input
-                  type="tel"
-                  placeholder="Phone number"
-                />
-              </div>
-
-            </div>
-          </section>
-
-          <section className="form-section">
-            <h2>Last Known Information</h2>
-
-            <p className="section-description">
-              Where and when was this person last seen?
-            </p>
-
-            <div className="form-grid">
-
-              <div className="form-group">
-                <label>Last Seen Location</label>
-
+                <label htmlFor="report-location">Last seen location</label>
                 <div className="input-with-icon">
-                  <MapPin size={18} />
-
-                  <input
-                    type="text"
-                    name="last_seen_location"
-                    placeholder="Example: Chennai Central Railway Station"
-                  />
+                  <MapPin size={18} aria-hidden="true" />
+                  <input id="report-location" name="last_seen_location" autoComplete="street-address" />
                 </div>
               </div>
-
-              <div className="form-group">
-                <label>Last Seen Date & Time</label>
-
-                <input type="datetime-local" />
-              </div>
-
-            </div>
-          </section>
-
-          <section className="form-section">
-            <h2>Physical Description</h2>
-
-            <p className="section-description">
-              These details can help match records when a name is unavailable.
-            </p>
-
-            <div className="form-grid">
-
-              <div className="form-group">
-                <label>Height</label>
-
-                <input
-                  type="text"
-                  placeholder="Example: 5 ft 8 in"
-                />
-              </div>
-
-              <div className="form-group">
-                <label>Clothing</label>
-
-                <input
-                  type="text"
-                  name="clothing"
-                  placeholder="Example: Blue shirt, black pants"
-                />
-              </div>
-
               <div className="form-group full-width">
-                <label>Identifying Marks</label>
-
-                <textarea
-                  name="identifying_marks"
-                  rows={4}
-                  placeholder="Scars, tattoos, birthmarks, glasses, etc."
-                />
+                <label htmlFor="report-clothing">Clothing</label>
+                <input id="report-clothing" name="clothing" />
               </div>
-
+              <div className="form-group full-width">
+                <label htmlFor="report-marks">Identifying marks</label>
+                <textarea id="report-marks" name="identifying_marks" rows={3} />
+              </div>
+              <div className="form-group full-width">
+                <label htmlFor="report-description">Other helpful information</label>
+                <textarea id="report-description" name="description" rows={4} />
+              </div>
             </div>
           </section>
-
-          <section className="form-section">
-            <h2>Additional Information</h2>
-
-            <div className="form-group">
-              <label>Anything else that may help?</label>
-
-              <textarea
-                rows={4}
-                placeholder="Medical information, belongings, people they were travelling with, etc."
-              />
-            </div>
-          </section>
-
           <div className="form-footer">
-
-            <p>
-              Your information will be shared only with authorized
-              personnel involved in the reunification process.
-            </p>
-
-            <button
-              type="submit"
-              className="submit-button"
-            >
-              Submit Missing Person Report
+            <p>Your report will receive a public case ID. Potential matches still require human verification.</p>
+            <button type="submit" className="submit-button" disabled={submitting}>
+              {submitting ? "Submitting…" : "Submit report"}
             </button>
-
           </div>
-
         </form>
       </div>
-    </div>
+    </main>
   );
 }
 
