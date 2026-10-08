@@ -30,9 +30,18 @@ class FakeDB:
     def __init__(self, cases=None):
         self.cases = cases or []
         self.added = []
+        self.last_query_conditions = []
 
     def query(self, model):
-        return Query(self.cases if model is Case else [])
+        query = Query(self.cases if model is Case else [])
+        original_filter = query.filter
+
+        def record_filter(condition):
+            self.last_query_conditions.append((condition.left.key, condition.right.value))
+            return original_filter(condition)
+
+        query.filter = record_filter
+        return query
 
     def add(self, row):
         row.id = len(self.cases) + len(self.added) + 1
@@ -92,6 +101,21 @@ class CaseFrontendContractTests(unittest.TestCase):
         self.assertIn("/api/cases/search", paths)
         self.assertIn("/api/cases/{case_id}", paths)
         self.assertIn("/api/cases/{case_id}/matches", paths)
+
+
+    def test_get_case_looks_up_public_id_and_preserves_numeric_id_lookup(self):
+        from app.routes.cases import get_case
+
+        public_case = SimpleNamespace(id=17, public_case_id="FH-5492")
+        public_db = FakeDB([public_case])
+        self.assertIs(get_case("FH-5492", public_db), public_case)
+        self.assertEqual(public_db.last_query_conditions, [("public_case_id", "FH-5492")])
+
+        numeric_case = SimpleNamespace(id=17, public_case_id="FH-5492")
+        numeric_db = FakeDB([numeric_case])
+        self.assertIs(get_case("17", numeric_db), numeric_case)
+        self.assertEqual(numeric_db.last_query_conditions, [("id", 17)])
+
 
 
 if __name__ == "__main__":
