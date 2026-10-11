@@ -31,10 +31,22 @@ function Search() {
     setResult(null);
     try {
       let found: SearchResult;
+      const numericMatch = value.match(/^#?(\d+)$/);
+
       if (/^FH-\d+$/i.test(value)) {
         const item: CaseResponse = await getCase(value.toUpperCase());
         found = {
           caseId: value.toUpperCase(),
+          name: item.name,
+          status: item.status,
+          location: item.last_seen_location,
+          description: item.description,
+        };
+      } else if (numericMatch) {
+        const numericId = numericMatch[1];
+        const item: CaseResponse = await getCase(numericId);
+        found = {
+          caseId: String(item.id),
           name: item.name,
           status: item.status,
           location: item.last_seen_location,
@@ -99,7 +111,10 @@ function Search() {
         {result && (
           <section className="search-result" aria-labelledby="case-result-name">
             <div className="result-header">
-              <div><span>PUBLIC CASE ID</span><h2>{result.caseId}</h2></div>
+              <div>
+                <span>{/^FH-\d+$/i.test(result.caseId) ? "PUBLIC CASE ID" : "CASE ID"}</span>
+                <h2>{/^FH-\d+$/i.test(result.caseId) ? result.caseId : `#${result.caseId}`}</h2>
+              </div>
               <div className="search-status"><span aria-hidden="true" />{result.status}</div>
             </div>
             <div className="result-person">

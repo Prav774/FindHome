@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, AlertTriangle, CheckCircle, Clock, Loader2, MapPin, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import { ArrowLeft, AlertTriangle, Building2, CheckCircle, Clock, Loader2, MapPin, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   getCase,
@@ -7,6 +7,7 @@ import {
   getMatch,
   getPerson,
   getPersonTimeline,
+  generateMatches,
   verifyMatch,
   rejectMatch,
   requestMatchInfo,
@@ -16,6 +17,7 @@ import {
   type PersonResponse,
   type TimelineEventResponse,
 } from "../api/client";
+import { isAuthorityAuthenticated } from "../auth/authority";
 
 type MatchView = {
   match: MatchResponse;
@@ -56,6 +58,10 @@ function chronological(events: TimelineEventResponse[]): TimelineEventResponse[]
 function MatchReview({ familyView = false }: { familyView?: boolean }) {
   const navigate = useNavigate();
   const { caseId: caseIdParam } = useParams<{ caseId: string }>();
+
+  const isAuthority = isAuthorityAuthenticated();
+  const effectiveFamilyView = familyView || !isAuthority;
+
   const [caseData, setCaseData] = useState<CaseResponse | null>(null);
   const [matchViews, setMatchViews] = useState<MatchView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -65,18 +71,44 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
   const [actionLoading, setActionLoading] = useState<number | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [actionError, setActionError] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState("");
+
   const inFlight = useRef(false);
   const refreshQueued = useRef(false);
   const refreshRef = useRef<() => Promise<void>>(async () => {});
   const hasLoaded = useRef(false);
+
+  // Auto-dismiss action success feedback after 5 seconds with timer cleanup
+  useEffect(() => {
+    if (!actionMessage) return;
+    const timer = window.setTimeout(() => {
+      setActionMessage("");
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [actionMessage]);
+
+  const handleGenerateMatches = async () => {
+    if (!caseData || generating) return;
+    try {
+      setGenerating(true);
+      setGenerateError("");
+      await generateMatches(caseData.id);
+      await refresh();
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : "Failed to generate matches.");
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const refresh = useCallback(async () => {
     if (inFlight.current) {
       refreshQueued.current = true;
       return;
     }
-    if (!caseIdParam || !/^FH-\d+$/i.test(caseIdParam)) {
-      setCaseError("Enter a public case ID in FH-XXXX format.");
+    if (!caseIdParam) {
+      setCaseError("No case ID was provided in the URL.");
       setLoading(false);
       hasLoaded.current = true;
       return;
@@ -88,7 +120,7 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
     setMatchesError("");
 
     try {
-      const currentCase = await getCase(caseIdParam.toUpperCase());
+      const currentCase = await getCase(caseIdParam);
       setCaseData(currentCase);
       let matchList: MatchResponse[];
       try {
@@ -107,22 +139,28 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
       }
 
       const nextViews = await Promise.all(matchList.map(async (match): Promise<MatchView> => {
+        const detailPromise = getMatch(match.id);
+        const personPromise = match.person_id != null ? getPerson(match.person_id) : Promise.resolve(null);
+        const timelinePromise = match.person_id != null ? getPersonTimeline(match.person_id) : Promise.resolve(null);
+
         const [detailResult, personResult, timelineResult] = await Promise.allSettled([
-          getMatch(match.id),
-          getPerson(match.person_id),
-          getPersonTimeline(match.person_id),
+          detailPromise,
+          personPromise,
+          timelinePromise,
         ]);
         const detail = detailResult.status === "fulfilled" ? detailResult.value : null;
         const person = personResult.status === "fulfilled" ? personResult.value : null;
-        const timeline = timelineResult.status === "fulfilled" ? chronological(timelineResult.value) : null;
+        const timeline = timelineResult.status === "fulfilled" && timelineResult.value
+          ? chronological(timelineResult.value)
+          : null;
         return {
           match,
           detail,
           person,
           timeline,
           detailError: detailResult.status === "rejected" ? errorText(detailResult.reason) : "",
-          personError: personResult.status === "rejected" ? errorText(personResult.reason) : "",
-          timelineError: timelineResult.status === "rejected" ? errorText(timelineResult.reason) : "",
+          personError: match.person_id != null && personResult.status === "rejected" ? errorText(personResult.reason) : "",
+          timelineError: match.person_id != null && timelineResult.status === "rejected" ? errorText(timelineResult.reason) : "",
         };
       }));
       setMatchViews(nextViews);
@@ -175,15 +213,18 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
     }
   }
 
-  const publicCaseId = caseIdParam && /^FH-\d+$/i.test(caseIdParam) ? caseIdParam.toUpperCase() : "";
-  const backTo = familyView ? "/search" : "/authority";
+  const publicCaseId = caseIdParam && /^FH-\d+$/i.test(caseIdParam)
+    ? caseIdParam.toUpperCase()
+    : caseData ? `#${caseData.id}` : (caseIdParam ? `#${caseIdParam}` : "");
+  const backTo = isAuthority ? "/authority" : "/search";
+  const backLabel = isAuthority ? "Back to dashboard" : "Back to search";
 
   if (loading) {
     return (
       <main className="review-page">
         <header className="review-header">
-          <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> Back</button>
-          <div><div className="review-case-id">CASE {publicCaseId || "—"}</div><h1>{familyView ? "Case status" : "Match review"}</h1></div>
+          <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> {backLabel}</button>
+          <div><div className="review-case-id">CASE {publicCaseId || "—"}</div><h1>{effectiveFamilyView ? "Case status" : "Match review"}</h1></div>
         </header>
         <div className="state-message" role="status"><Loader2 size={22} className="spin" /> Loading case and match information…</div>
       </main>
@@ -194,7 +235,7 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
     return (
       <main className="review-page">
         <header className="review-header">
-          <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> Back</button>
+          <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> {backLabel}</button>
           <div><div className="review-case-id">CASE {publicCaseId || "—"}</div><h1>Case status</h1></div>
         </header>
         <section className="state-card error-state" role="alert">
@@ -209,10 +250,10 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
   return (
     <main className="review-page">
       <header className="review-header">
-        <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> {familyView ? "Back to search" : "Back to dashboard"}</button>
+        <button className="back-button" onClick={() => navigate(backTo)}><ArrowLeft size={18} /> {backLabel}</button>
         <div>
-          <div className="review-case-id">PUBLIC CASE ID · {publicCaseId}</div>
-          <h1>{familyView ? "Case status" : "Match review"}</h1>
+          <div className="review-case-id">{publicCaseId.startsWith("#") ? `CASE ${publicCaseId}` : `PUBLIC CASE ID · ${publicCaseId}`}</div>
+          <h1>{effectiveFamilyView ? "Case status" : "Match review"}</h1>
           <p>Case updates and potential matches from FindHome.</p>
         </div>
         <button className="refresh-button" onClick={() => void refresh()} disabled={refreshing}>
@@ -221,10 +262,71 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
         </button>
       </header>
 
-      {caseError && <div className="form-alert error" role="alert">Case refresh failed: {caseError}</div>}
-      {matchesError && <div className="form-alert error" role="alert">Could not refresh matches: {matchesError}</div>}
-      {actionMessage && <div className="form-alert success" role="status">{actionMessage}</div>}
-      {actionError && <div className="form-alert error" role="alert">Action failed: {actionError}</div>}
+      {caseError && (
+        <div className="form-alert error" role="alert" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Case refresh failed: {caseError}</span>
+          <button
+            type="button"
+            onClick={() => setCaseError("")}
+            aria-label="Dismiss error"
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit", fontSize: "18px", lineHeight: "1", padding: "0 6px" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {matchesError && (
+        <div className="form-alert error" role="alert" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Could not refresh matches: {matchesError}</span>
+          <button
+            type="button"
+            onClick={() => setMatchesError("")}
+            aria-label="Dismiss error"
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit", fontSize: "18px", lineHeight: "1", padding: "0 6px" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {generateError && (
+        <div className="form-alert error" role="alert" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Match generation failed: {generateError}</span>
+          <button
+            type="button"
+            onClick={() => setGenerateError("")}
+            aria-label="Dismiss error"
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit", fontSize: "18px", lineHeight: "1", padding: "0 6px" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {actionMessage && (
+        <div className="form-alert success" role="status" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{actionMessage}</span>
+          <button
+            type="button"
+            onClick={() => setActionMessage("")}
+            aria-label="Dismiss message"
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit", fontSize: "18px", lineHeight: "1", padding: "0 6px" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {actionError && (
+        <div className="form-alert error" role="alert" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Action failed: {actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError("")}
+            aria-label="Dismiss error"
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit", fontSize: "18px", lineHeight: "1", padding: "0 6px" }}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <section className="case-overview">
         <div className="case-overview-heading">
@@ -248,7 +350,30 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
         {matchViews.length === 0 && !matchesError && (
           <div className="state-card empty-state">
             <Clock size={25} />
-            <div><h3>No high-confidence match yet</h3><p>The case remains in the system. New match results will appear here as records are updated.</p></div>
+            <div>
+              <h3>No high-confidence match yet</h3>
+              <p>The case remains in the system. New match results will appear here as records are updated.</p>
+              {isAuthority && (
+                <div style={{ marginTop: "1rem" }}>
+                  <button
+                    type="button"
+                    className="generate-button"
+                    disabled={generating || refreshing}
+                    onClick={() => void handleGenerateMatches()}
+                  >
+                    {generating ? (
+                      <>
+                        <Loader2 size={16} className="spin" /> Generating matches…
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw size={15} /> Generate Match
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -259,23 +384,120 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
           const nextEvidence = detail?.next_best_evidence ?? {};
           const effectiveStatus = detail?.status ?? match.status;
           const finished = effectiveStatus === "VERIFIED" || effectiveStatus === "REJECTED";
+
+          const isSourceRecord = match.person_id == null;
+          const sourceRecord = detail?.source_record ?? match.source_record;
+          const sourceRecordId = detail?.source_record_id ?? match.source_record_id ?? sourceRecord?.id;
+
+          const candidateName = isSourceRecord
+            ? (sourceRecord?.raw_name || (sourceRecordId != null ? `Source Record #${sourceRecordId}` : "Imported Source Record"))
+            : (person?.name || (match.person_id != null ? `Person #${match.person_id}` : "Person information unavailable"));
+
+          const candidateSubtitle = isSourceRecord ? (
+            sourceRecord ? (
+              [
+                sourceRecord.source_type ? sourceRecord.source_type.replaceAll("_", " ") : null,
+                sourceRecord.organization,
+                sourceRecord.raw_age != null ? `${sourceRecord.raw_age} years` : null,
+                sourceRecord.raw_gender,
+                sourceRecord.location,
+              ].filter(Boolean).join(" · ") || "Imported source record details"
+            ) : "Imported source record — not yet linked to a person."
+          ) : (
+            person ? (
+              [person.age != null ? `${person.age} years` : null, person.gender, person.status].filter(Boolean).join(" · ") || "No additional person details returned"
+            ) : null
+          );
+
           return (
             <article className="match-detail-card" key={match.id}>
               <header className="match-card-header">
                 <div>
-                  <span className="card-label">SYSTEM SUGGESTION</span>
-                  <h3>{person?.name || "Person information unavailable"}</h3>
-                  {person && <p>{[person.age != null ? person.age + " years" : null, person.gender, person.status].filter(Boolean).join(" · ") || "No additional person details returned"}</p>}
-                  {personError ? <p className="inline-note">Person details could not be loaded: {personError}</p> : !person && <p className="inline-note">Loading person details…</p>}
+                  <span className="card-label">
+                    {isSourceRecord ? "IMPORTED SOURCE RECORD CANDIDATE" : "SYSTEM SUGGESTION"}
+                  </span>
+                  <h3>{candidateName}</h3>
+                  {candidateSubtitle && <p>{candidateSubtitle}</p>}
+                  {isSourceRecord ? (
+                    <p className="inline-note" style={{ color: "#0f766e", fontWeight: 500, marginTop: "4px" }}>
+                      Imported source record — not yet linked to a person.
+                    </p>
+                  ) : (
+                    personError ? <p className="inline-note">Person details could not be loaded: {personError}</p> : !person && <p className="inline-note">Loading person details…</p>
+                  )}
                 </div>
                 <div className="match-score-box">
                   <span>Match score</span>
-                  <strong>{String(match.score)}</strong>
+                  <strong>{match.score} / 100</strong>
                   <small>System score, not a probability</small>
                 </div>
               </header>
 
               <div className={"match-status-line status-" + effectiveStatus.toLowerCase().replaceAll("_", "-")}><ShieldCheck size={18} /><strong>{statusLabel(effectiveStatus)}</strong></div>
+
+              {isSourceRecord && sourceRecord && (
+                <section
+                  className="source-record-details"
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "8px",
+                    padding: "14px 18px",
+                    margin: "12px 0 16px",
+                  }}
+                >
+                  <h4 style={{ margin: "0 0 10px", fontSize: "0.92rem", color: "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Building2 size={16} color="#0f766e" /> Source Record Information
+                  </h4>
+                  <dl style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "10px 16px", margin: 0, fontSize: "0.875rem" }}>
+                    <div>
+                      <dt style={{ color: "#64748b", fontWeight: 500 }}>Source Type</dt>
+                      <dd style={{ margin: 0, fontWeight: 600, color: "#0f172a" }}>
+                        {sourceRecord.source_type ? sourceRecord.source_type.replaceAll("_", " ") : "—"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt style={{ color: "#64748b", fontWeight: 500 }}>Organization / Facility</dt>
+                      <dd style={{ margin: 0, fontWeight: 600, color: "#0f172a" }}>
+                        {sourceRecord.organization || "—"}
+                      </dd>
+                    </div>
+                    {sourceRecord.external_record_id && (
+                      <div>
+                        <dt style={{ color: "#64748b", fontWeight: 500 }}>External Record ID</dt>
+                        <dd style={{ margin: 0, fontWeight: 600, color: "#0f172a" }}>
+                          #{sourceRecord.external_record_id}
+                          {sourceRecord.external_source ? ` (${sourceRecord.external_source})` : ""}
+                        </dd>
+                      </div>
+                    )}
+                    {sourceRecord.location && (
+                      <div>
+                        <dt style={{ color: "#64748b", fontWeight: 500 }}>Recorded Location</dt>
+                        <dd style={{ margin: 0, fontWeight: 600, color: "#0f172a" }}>
+                          {sourceRecord.location}
+                        </dd>
+                      </div>
+                    )}
+                    {sourceRecord.raw_description && (
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <dt style={{ color: "#64748b", fontWeight: 500 }}>Description</dt>
+                        <dd style={{ margin: 0, color: "#0f172a" }}>
+                          {sourceRecord.raw_description}
+                        </dd>
+                      </div>
+                    )}
+                    {sourceRecord.recorded_at && (
+                      <div>
+                        <dt style={{ color: "#64748b", fontWeight: 500 }}>Recorded Timestamp</dt>
+                        <dd style={{ margin: 0, color: "#0f172a" }}>
+                          {new Date(sourceRecord.recorded_at).toLocaleString()}
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+                </section>
+              )}
 
               {detailError ? <div className="inline-alert" role="alert">Match explanation and evidence could not be loaded: {detailError}</div> : !detail ? <p className="inline-note" role="status">Loading match evidence…</p> : (
                 <div className="match-evidence-content">
@@ -288,34 +510,61 @@ function MatchReview({ familyView = false }: { familyView?: boolean }) {
                 </div>
               )}
 
-              <section className="timeline-section" aria-label="Person timeline">
+              <section className="timeline-section" aria-label="Candidate timeline">
                 <div className="timeline-heading"><Clock size={19} /><h4>Timeline</h4></div>
-                {timelineError && <p className="inline-alert" role="alert">Timeline could not be loaded: {timelineError}</p>}
-                {timeline === null && !timelineError && <p className="inline-note">Loading timeline…</p>}
-                {timeline?.length === 0 && <p className="inline-note">No timeline events are available yet.</p>}
-                {timeline && timeline.length > 0 && <ol className="timeline-list">
-                  {timeline.map((event) => {
-                    const time = event.event_time ?? event.created_at;
-                    return <li key={event.id}>
-                      <time dateTime={time}>{new Date(time).toLocaleString()}</time>
-                      <strong>{event.event_type}</strong>
-                      {event.location && <span><MapPin size={14} /> {event.location}</span>}
-                      {event.description && <p>{event.description}</p>}
-                      {event.source && <small>Source: {event.source}</small>}
-                    </li>;
-                  })}
-                </ol>}
+                {isSourceRecord ? (
+                  <div className="source-record-timeline" style={{ padding: "8px 0" }}>
+                    {sourceRecord?.recorded_at ? (
+                      <ol className="timeline-list">
+                        <li>
+                          <time dateTime={sourceRecord.recorded_at}>{new Date(sourceRecord.recorded_at).toLocaleString()}</time>
+                          <strong>{sourceRecord.source_type ? `${sourceRecord.source_type.replaceAll("_", " ")} Intake Recorded` : "Source Record Ingested"}</strong>
+                          {sourceRecord.location && <span><MapPin size={14} /> {sourceRecord.location}</span>}
+                          {sourceRecord.organization && <p>Facility: {sourceRecord.organization}</p>}
+                          {sourceRecord.external_record_id && <small>External Record #{sourceRecord.external_record_id}</small>}
+                        </li>
+                      </ol>
+                    ) : null}
+                    <p className="inline-note" style={{ marginTop: sourceRecord?.recorded_at ? "12px" : "0" }}>
+                      No person timeline is available until this source record is linked to a person.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {timelineError && <p className="inline-alert" role="alert">Timeline could not be loaded: {timelineError}</p>}
+                    {timeline === null && !timelineError && <p className="inline-note">Loading timeline…</p>}
+                    {timeline?.length === 0 && <p className="inline-note">No timeline events are available yet.</p>}
+                    {timeline && timeline.length > 0 && <ol className="timeline-list">
+                      {timeline.map((event) => {
+                        const time = event.event_time ?? event.created_at;
+                        return <li key={event.id}>
+                          <time dateTime={time}>{new Date(time).toLocaleString()}</time>
+                          <strong>{event.event_type}</strong>
+                          {event.location && <span><MapPin size={14} /> {event.location}</span>}
+                          {event.description && <p>{event.description}</p>}
+                          {event.source && <small>Source: {event.source}</small>}
+                        </li>;
+                      })}
+                    </ol>}
+                  </>
+                )}
               </section>
 
               <footer className="verification-footer">
                 <div><strong>{effectiveStatus === "VERIFIED" ? "Human verification complete" : effectiveStatus === "REJECTED" ? "This suggestion was rejected" : effectiveStatus === "NEEDS_MORE_INFO" ? "More information was requested" : "Human verification required"}</strong><p>AI suggestions do not confirm identity. An authorized responder makes the verification decision.</p></div>
-                {!familyView && !finished && (
+                {effectiveFamilyView ? (
                   <div className="verification-actions">
-                    <button className="verify-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, verifyMatch, "Verification saved.")}>{actionLoading === match.id ? <Loader2 size={17} className="spin" /> : <CheckCircle size={17} />} Verify</button>
-                    <button className="reject-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, rejectMatch, "Rejection saved.")}><XCircle size={17} /> Reject</button>
-                    <button className="request-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, requestMatchInfo, "Information request saved.")}><AlertTriangle size={17} /> Request more information</button>
+                    <p className="trust-copy" style={{ margin: 0, fontSize: "0.875rem", color: "var(--color-text-muted, #666)" }}>
+                      Final verification decisions require an authorized responder.
+                    </p>
                   </div>
-                )}
+                ) : !finished ? (
+                  <div className="verification-actions">
+                    <button className="verify-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, verifyMatch, "Verification saved.")}>{actionLoading === match.id ? <Loader2 size={17} className="spin" /> : <CheckCircle size={17} />} Verify Match</button>
+                    <button className="reject-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, rejectMatch, "Rejection saved.")}><XCircle size={17} /> Reject Match</button>
+                    <button className="request-button" disabled={actionLoading !== null} onClick={() => void runAction(match.id, requestMatchInfo, "Information request saved.")}><AlertTriangle size={17} /> Request Information</button>
+                  </div>
+                ) : null}
               </footer>
             </article>
           );

@@ -1,88 +1,482 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { getCases, type CaseResponse } from "../api/client";
+import {
+  CheckCircle,
+  XCircle,
+  Users,
+  ShieldCheck,
+  AlertCircle,
+  Search,
+  RefreshCw,
+  Eye,
+  LogOut,
+} from "lucide-react";
 
-function AuthorityDashboard() {
+import {
+  getCases,
+  getCaseMatches,
+  generateMatches,
+} from "../api/client";
+import { clearAuthoritySession } from "../auth/authority";
+
+type CaseItem = {
+  id: number;
+  name: string;
+  description?: string | null;
+  last_seen_location?: string | null;
+  status: string;
+  created_at: string;
+  updated_at?: string | null;
+};
+
+type MatchItem = {
+  id: number;
+  case_id: number;
+  person_id: number | null;
+  source_record_id?: number | null;
+  score: number;
+  status: string;
+  explanation?: string | null;
+  created_at: string;
+};
+
+export default function AuthorityDashboard() {
   const navigate = useNavigate();
-  const [cases, setCases] = useState<CaseResponse[]>([]);
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
+  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [matches, setMatches] = useState<Record<number, MatchItem[]>>({});
 
-  async function loadCases(silent = false) {
-    if (silent) setRefreshing(true);
-    else setLoading(true);
-    setError("");
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+
+  const loadDashboard = async () => {
     try {
-      setCases(await getCases());
+      setLoading(true);
+      setError("");
+
+      const caseData = await getCases();
+      setCases(caseData);
+
+      const matchMap: Record<number, MatchItem[]> = {};
+
+      await Promise.all(
+        caseData.map(async (caseItem) => {
+          try {
+            const caseMatches = await getCaseMatches(caseItem.id);
+            matchMap[caseItem.id] = caseMatches;
+          } catch {
+            matchMap[caseItem.id] = [];
+          }
+        })
+      );
+
+      setMatches(matchMap);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load cases.");
+      console.error(err);
+      setError("Unable to load authority dashboard data.");
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
-  }
+  };
 
   useEffect(() => {
-    let active = true;
-    getCases()
-      .then((data) => { if (active) setCases(data); })
-      .catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Could not load cases."); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    loadDashboard();
   }, []);
 
-  const visibleCases = useMemo(() => {
-    const term = query.trim().toLocaleLowerCase();
-    return [...cases]
-      .filter((item) => !term || [item.name, item.status, item.last_seen_location, item.description].some((value) => value?.toLocaleLowerCase().includes(term)))
-      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-  }, [cases, query]);
+  const allMatches = useMemo(() => {
+    return Object.values(matches).flat();
+  }, [matches]);
+
+  const approvedCount = useMemo(() => {
+    return allMatches.filter(
+      (match) => (match.status || "").toUpperCase() === "VERIFIED"
+    ).length;
+  }, [allMatches]);
+
+  const rejectedCount = useMemo(() => {
+    return allMatches.filter((match) =>
+      ["REJECTED", "NOT_MATCH", "NOT_A_MATCH"].includes(
+        (match.status || "").toUpperCase()
+      )
+    ).length;
+  }, [allMatches]);
+
+  const filteredCases = useMemo(() => {
+    const query = search.toLowerCase().trim();
+
+    if (!query) return cases;
+
+    return cases.filter((item) => {
+      return (
+        String(item.id).includes(query) ||
+        item.name?.toLowerCase().includes(query) ||
+        item.last_seen_location?.toLowerCase().includes(query) ||
+        item.status?.toLowerCase().includes(query)
+      );
+    });
+  }, [cases, search]);
+
+  const getBestMatch = (caseId: number) => {
+    const caseMatches = matches[caseId] || [];
+
+    if (!caseMatches.length) return null;
+
+    return [...caseMatches].sort((a, b) => b.score - a.score)[0];
+  };
+
+  const generateForCase = async (
+    caseId: number,
+    event?: React.MouseEvent<HTMLButtonElement>
+  ) => {
+  event?.preventDefault();
+  event?.stopPropagation();
+
+  try {
+    setActionLoading(true);
+    setError("");
+
+    // Generate matches for this exact numeric case ID.
+    await generateMatches(caseId);
+
+    // Stay on Authority Dashboard and refresh the data.
+    const caseData = await getCases();
+    setCases(caseData);
+
+    const matchMap: Record<number, MatchItem[]> = {};
+
+    await Promise.all(
+      caseData.map(async (caseItem) => {
+        try {
+          matchMap[caseItem.id] = await getCaseMatches(caseItem.id);
+        } catch {
+          matchMap[caseItem.id] = [];
+        }
+      })
+    );
+
+    setMatches(matchMap);
+  } catch (err) {
+    console.error("Generate match error:", err);
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to generate matches."
+    );
+  } finally {
+    setActionLoading(false);
+  }
+};
+
+  const getStatusLabel = (status: string) => {
+    const s = (status || "").toUpperCase();
+    switch (s) {
+      case "VERIFIED":
+        return "Approved";
+
+      case "REJECTED":
+      case "NOT_MATCH":
+      case "NOT_A_MATCH":
+        return "Not Approved";
+
+      case "POTENTIAL_MATCH":
+      case "PENDING":
+        return "Potential Match";
+
+      default:
+        return status.replaceAll("_", " ");
+    }
+  };
+
+  const getStatusClass = (status: string) => {
+    const s = (status || "").toUpperCase();
+    switch (s) {
+      case "VERIFIED":
+        return "verified";
+
+      case "REJECTED":
+      case "NOT_MATCH":
+      case "NOT_A_MATCH":
+        return "rejected";
+
+      case "POTENTIAL_MATCH":
+      case "PENDING":
+        return "potential";
+
+      default:
+        return "pending";
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="authority-page">
+        <div className="authority-loading">
+          <RefreshCw className="spin" size={28} />
+          <p>Loading authority dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <main className="dashboard-page">
-      <header className="dashboard-header">
-        <div>
-          <button className="back-button" onClick={() => navigate("/")}><ArrowLeft size={18} /> Home</button>
-          <div className="dashboard-logo"><ShieldCheck size={24} /> FindHome</div>
-          <h1>Responder case list</h1>
-          <p>Cases returned by the backend. Open a case using its public ID to review matches and evidence.</p>
-        </div>
-        <button className="primary-button" onClick={() => navigate("/search")}>Search by public case ID</button>
-      </header>
+    <div className="authority-page">
+      <div className="authority-container">
+        {/* HEADER */}
+        <div className="authority-header">
+          <div>
+            <div className="authority-eyebrow">
+              <ShieldCheck size={18} />
+              AUTHORITY CONTROL CENTER
+            </div>
 
-      <section className="dashboard-container">
-        <div className="dashboard-panel">
-          <div className="panel-header">
-            <div><h2>Cases</h2><p>{cases.length} case{cases.length === 1 ? "" : "s"} returned by the API</p></div>
-            <div className="dashboard-controls">
-              <label className="search-box"><Search size={18} /><span className="sr-only">Filter loaded cases</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter name or status" /></label>
-              <button className="refresh-button" onClick={() => void loadCases(true)} disabled={refreshing}><RefreshCw size={17} className={refreshing ? "spin" : undefined} /> Refresh</button>
+            <h1>Reunification Dashboard</h1>
+
+            <p>
+              Review AI-assisted matches and make the final human verification
+              decision.
+            </p>
+          </div>
+
+          <div className="authority-header-actions">
+            <button
+              className="refresh-button"
+              onClick={loadDashboard}
+              disabled={loading}
+            >
+              <RefreshCw size={17} />
+              Refresh
+            </button>
+
+            <button
+              type="button"
+              className="refresh-button"
+              onClick={() => {
+                clearAuthoritySession();
+                navigate("/authority-login", { replace: true });
+              }}
+              title="Sign out of authority session"
+            >
+              <LogOut size={16} />
+              Sign Out
+            </button>
+          </div>
+        </div>
+
+        {/* ERROR */}
+        {error && (
+          <div className="authority-error">
+            <AlertCircle size={18} />
+            {error}
+          </div>
+        )}
+
+        {/* STATISTICS */}
+        <div className="authority-stats">
+          <div className="authority-stat-card">
+            <div className="stat-icon">
+              <Users size={22} />
+            </div>
+
+            <div>
+              <span>Total Cases</span>
+              <strong>{cases.length}</strong>
+              <small>Missing person cases</small>
             </div>
           </div>
 
-          {loading && <div className="state-message" role="status">Loading cases…</div>}
-          {error && <div className="form-alert error" role="alert">Cases could not be loaded: {error}<button className="text-button" onClick={() => void loadCases()}>Retry</button></div>}
-          {!loading && !error && visibleCases.length === 0 && (
-            <div className="state-card empty-state"><div><h3>{cases.length === 0 ? "No cases returned" : "No cases match this filter"}</h3><p>{cases.length === 0 ? "When cases are available, they will appear here." : "Try another name or status."}</p></div></div>
-          )}
-          {!loading && !error && visibleCases.length > 0 && (
-            <ul className="case-list">
-              {visibleCases.map((item) => (
-                <li className="case-list-item" key={item.id}>
-                  <div><span className="card-label">CASE PERSON</span><h3>{item.name}</h3>{item.last_seen_location && <p>{item.last_seen_location}</p>}</div>
-                  <div><span className="card-label">BACKEND STATUS</span><strong className="case-status-value">{item.status}</strong><small><time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></small></div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div className="authority-stat-card approved-card">
+            <div className="stat-icon">
+              <CheckCircle size={22} />
+            </div>
+
+            <div>
+              <span>Approved Matches</span>
+              <strong>{approvedCount}</strong>
+              <small>Authority verified</small>
+            </div>
+          </div>
+
+          <div className="authority-stat-card rejected-card">
+            <div className="stat-icon">
+              <XCircle size={22} />
+            </div>
+
+            <div>
+              <span>Not Approved</span>
+              <strong>{rejectedCount}</strong>
+              <small>Rejected matches</small>
+            </div>
+          </div>
         </div>
-        <p className="dashboard-note">The case list endpoint does not return public case IDs. Use the FH-XXXX search above to open a case; internal database IDs are not shown here.</p>
-      </section>
-    </main>
+
+        {/* CASE LIST */}
+        <div className="authority-panel">
+          <div className="authority-panel-header">
+            <div>
+              <h2>Missing Person Cases</h2>
+              <p>
+                Review candidate matches before making an authority decision.
+              </p>
+            </div>
+
+            <div className="authority-search">
+              <Search size={17} />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search cases..."
+              />
+            </div>
+          </div>
+
+          <div className="authority-table-wrapper">
+            <table className="authority-table">
+              <thead>
+                <tr>
+                  <th>Case ID</th>
+                  <th>Missing Person</th>
+                  <th>Last Seen</th>
+                  <th>Best Match</th>
+                  <th>Match Score</th>
+                  <th>Match Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {filteredCases.map((caseItem) => {
+                  const bestMatch = getBestMatch(caseItem.id);
+
+                  return (
+                    <tr key={caseItem.id}>
+                      <td>
+                        <span
+                          className="case-id"
+                          style={{ cursor: "pointer", textDecoration: "underline" }}
+                          onClick={() => navigate(`/case/${caseItem.id}`)}
+                        >
+                          #{caseItem.id}
+                        </span>
+                      </td>
+
+                      <td>
+                        <div className="person-cell">
+                          <strong
+                            style={{ cursor: "pointer", textDecoration: "underline" }}
+                            onClick={() => navigate(`/case/${caseItem.id}`)}
+                          >
+                            {caseItem.name || "Unknown"}
+                          </strong>
+
+                          <span>
+                            {caseItem.status || "SEARCHING"}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td>
+                        {caseItem.last_seen_location || "Not available"}
+                      </td>
+
+                      <td>
+                        {bestMatch ? (
+                          <div className="match-cell">
+                            <span>
+                              {bestMatch.person_id != null
+                                ? `Candidate #${bestMatch.person_id}`
+                                : `Source Record #${bestMatch.source_record_id ?? "—"}`}
+                            </span>
+
+                            <small>
+                              Match ID #{bestMatch.id}
+                            </small>
+                          </div>
+                        ) : (
+                          <span className="muted">
+                            No matching candidate
+                          </span>
+                        )}
+                      </td>
+
+                      <td>
+                        {bestMatch ? (
+                          <div className="confidence">
+                            <strong>{bestMatch.score} / 100</strong>
+
+                            <div className="confidence-bar">
+                              <div
+                                style={{
+                                  width: `${Math.min(
+                                    Math.max(bestMatch.score, 0),
+                                    100
+                                  )}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+
+                      <td>
+                        {bestMatch ? (
+                          <span
+                            className={`match-status ${getStatusClass(
+                              bestMatch.status
+                            )}`}
+                          >
+                            {getStatusLabel(bestMatch.status)}
+                          </span>
+                        ) : (
+                          <span className="match-status pending">
+                            No Match
+                          </span>
+                        )}
+                      </td>
+
+                      <td>
+                        {bestMatch ? (
+                          <button
+  type="button"
+  className="review-button"
+  onClick={(event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    navigate(`/review/${caseItem.id}`);
+  }}
+>
+  <Eye size={15} />
+  Review Match
+</button>
+                        ) : (
+                          <button
+  type="button"
+  className="generate-button"
+  onClick={(event) => generateForCase(caseItem.id, event)}
+  disabled={actionLoading}
+>
+  {actionLoading ? "Generating..." : "Generate Match"}
+</button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+
+            {filteredCases.length === 0 && (
+              <div className="empty-cases">
+                <Users size={34} />
+                <h3>No cases found</h3>
+                <p>There are no cases matching your search.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
-
-export default AuthorityDashboard;

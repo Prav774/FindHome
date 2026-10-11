@@ -7,7 +7,10 @@ function Landing() {
     <div className="landing">
       <nav className="navbar">
         <div className="logo"><HeartHandshake size={28} /><span>FindHome</span></div>
-        <button className="nav-button" onClick={() => navigate("/authority")}>Responder case list</button>
+        <div style={{ display: "flex", gap: "10px" }}>
+          <button className="nav-button" onClick={() => navigate("/login")}>Login</button>
+          <button className="nav-button" onClick={() => navigate("/authority-login")}>Authority</button>
+        </div>
       </nav>
       <main className="hero">
         <section className="hero-content">
@@ -29,11 +32,11 @@ function Landing() {
       </main>
       <section className="responder-cta">
         <div>
-          <span className="small-label">FOR RESPONSE TEAMS</span>
-          <h2>Review a case and its potential matches</h2>
-          <p>Open a case with its public ID to review evidence and timeline events, then record a verification decision.</p>
+          <span className="small-label">FAMILY REPORT</span>
+          <h2>Unknown Person / Missing Details</h2>
+          <p>Share the details you know about a missing person. Your report is sent to FindHome and receives a public case ID for updates.</p>
         </div>
-        <button className="primary-button" onClick={() => navigate("/authority")}>Open responder case list <ArrowRight size={18} /></button>
+        <button className="primary-button" onClick={() => navigate("/report")}>Submit Missing Details <ArrowRight size={18} /></button>
       </section>
       <section className="principles">
         <div><ShieldCheck /><h3>Evidence-based</h3><p>Review the evidence returned with each potential match.</p></div>

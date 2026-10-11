@@ -1,8 +1,20 @@
+const nodeEnv =
+  typeof globalThis !== "undefined"
+    ? ((globalThis as unknown as Record<string, unknown>).process as
+        | { env?: Record<string, string | undefined> }
+        | undefined)?.env
+    : undefined;
+
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || "http://10.56.142.50:8000"
-).replace(/\/+$/, "");
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) ||
+  nodeEnv?.VITE_API_BASE_URL ||
+  ""
+).trim().replace(/\/+$/, "");
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!API_BASE_URL) {
+    throw new Error("Backend URL is not configured. Set VITE_API_BASE_URL.");
+  }
   const response = await fetch(API_BASE_URL + path, init);
   if (!response.ok) {
     const body = await response.text();
@@ -118,10 +130,28 @@ export interface PersonRecordResponse {
 // MATCHING
 // --------------------
 
+export interface MatchSourceRecordResponse {
+  id: number;
+  organization: string;
+  source_type: string;
+  external_source?: string | null;
+  external_table?: string | null;
+  external_record_id?: string | null;
+  raw_name?: string | null;
+  raw_age?: number | null;
+  raw_gender?: string | null;
+  raw_description?: string | null;
+  external_status?: string | null;
+  location?: string | null;
+  recorded_at?: string | null;
+}
+
 export interface MatchResponse {
   id: number;
   case_id: number;
-  person_id: number;
+  person_id: number | null;
+  source_record_id?: number | null;
+  source_record?: MatchSourceRecordResponse | null;
   score: number;
   status: string;
   explanation: string | null;
@@ -179,12 +209,18 @@ export function getCases(): Promise<CaseResponse[]> {
 }
 
 export function getPerson(personId: number): Promise<PersonResponse> {
+  if (personId == null) {
+    return Promise.reject(new Error("Cannot fetch person without a valid person ID."));
+  }
   return request<PersonResponse>("/api/persons/" + personId);
 }
 
 export function getPersonTimeline(
   personId: number
 ): Promise<TimelineEventResponse[]> {
+  if (personId == null) {
+    return Promise.reject(new Error("Cannot fetch timeline without a valid person ID."));
+  }
   return request<TimelineEventResponse[]>("/api/persons/" + personId + "/timeline");
 }
 
@@ -223,3 +259,46 @@ export function requestMatchInfo(matchId: number): Promise<MatchResponse> {
     headers: jsonHeaders,
   });
 }
+
+// --------------------
+// AUTH
+// --------------------
+
+export interface AuthRegisterRequest {
+  name: string;
+  email: string;
+  password: string;
+}
+
+export interface AuthLoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface AuthUserResponse {
+  id: number;
+  name: string;
+  email: string;
+  [key: string]: unknown;
+}
+
+export function registerAuthority(
+  data: AuthRegisterRequest
+): Promise<AuthUserResponse> {
+  return request<AuthUserResponse>("/api/auth/register", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(data),
+  });
+}
+
+export function loginAuthority(
+  data: AuthLoginRequest
+): Promise<AuthUserResponse> {
+  return request<AuthUserResponse>("/api/auth/login", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(data),
+  });
+}
+
